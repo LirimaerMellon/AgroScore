@@ -19,6 +19,7 @@ class FeatureExplainer:
 
         self.explainer = shap.TreeExplainer(self.model)
 
+
     def explain_single(self, X_single: pd.DataFrame) -> Dict:
         X_single = X_single[self.feature_names]
 

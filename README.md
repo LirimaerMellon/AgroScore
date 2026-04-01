@@ -36,7 +36,7 @@ app/
 ## Требования
 
 - Windows, Mac или Linux
-- Python 3.8+
+- Python 3.10+
 
 ## Установка
 

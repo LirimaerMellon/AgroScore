@@ -1,2 +1,2 @@
-"""Agricultural Subsidy Scoring System"""
+"""AgriScore System"""
 __version__ = "1.0.0"
