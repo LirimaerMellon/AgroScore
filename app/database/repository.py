@@ -106,12 +106,12 @@ class ErrorLogRepository:
 
 
     # Read
-    def get_by_trace(self, trace_id: str) -> List[Dict]:
-        """Все ошибки одной загрузки."""
+    def get_by_trace(self, trace_id: str, limit: int = 100, offset: int = 0) -> List[Dict]:
+        """Ошибки одной загрузки (с пагинацией)."""
         with self.db.get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM error_logs WHERE trace_id = ? ORDER BY id",
-                (trace_id,),
+                "SELECT * FROM error_logs WHERE trace_id = ? ORDER BY id LIMIT ? OFFSET ?",
+                (trace_id, limit, offset),
             ).fetchall()
 
         return [self._row_to_dict(r) for r in rows]
@@ -125,6 +125,20 @@ class ErrorLogRepository:
             ).fetchall()
 
         return [self._row_to_dict(r) for r in rows]
+
+    def count(self, trace_id: Optional[str] = None) -> int:
+        """Общее количество ошибок (для пагинации)."""
+        with self.db.get_connection() as conn:
+            if trace_id:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM error_logs WHERE trace_id = ?",
+                    (trace_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM error_logs",
+                ).fetchone()
+        return row["cnt"] if row else 0
 
     def get_traces(self, limit: int = 50) -> List[Dict]:
         """Список уникальных загрузок с числом ошибок."""

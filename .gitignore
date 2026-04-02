@@ -1,24 +1,73 @@
+# ===========================
+# Python
+# ===========================
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+.venv/
 env/
 venv/
 
+# ===========================
+# Data & Artifacts
+# ===========================
 data/raw/*
-!data/raw/data.csv
-
+!data/raw/.gitkeep
 data/models/*
 !data/models/.gitkeep
+data/features/*
+!data/features/.gitkeep
+data/results/*
+!data/results/.gitkeep
+data/debug/*
+!data/debug/.gitkeep
+data/agriscore.db
+data/agriscore.db-wal
+data/agriscore.db-shm
+data/*.log
 
-results/*
-!results/.gitkeep
+# ===========================
+# Temp / debug scripts (корень)
+# ===========================
+_clean_db.py
+debug_*.py
+/test_api.py
+/train.py
 
-debug/*
-!debug/.gitkeep
+# ===========================
+# Old frontend (Vue, deprecated)
+# ===========================
+frontend/
 
-*.xlsx
-.DS_Store
+# ===========================
+# Frontend (Node / Vite)
+# ===========================
+front/node_modules/
+front/dist/
+front/dist-ssr/
+*.local
 
+# ===========================
+# IDE & OS
+# ===========================
 .idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ===========================
+# Logs
+# ===========================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*

@@ -13,6 +13,7 @@ from app.pipeline.features import FeatureEngineer
 from app.pipeline.model import ScoringModel
 from app.pipeline.explainer import FeatureExplainer
 from app.pipeline.validators import DataValidators
+from app.pipeline.mapper import ColumnMapper
 
 # =========================
 # ПУБЛИЧНЫЙ API ПАКЕТА
@@ -35,5 +36,8 @@ __all__ = [
     'FeatureExplainer',
 
     # validators
-    'DataValidators'
+    'DataValidators',
+
+    # mapper
+    'ColumnMapper'
 ]
