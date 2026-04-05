@@ -1,42 +1,7 @@
 """
-FastAPI приложение AgriScore.
-
-Система merit-based скоринга сельхозпроизводителей.
-
-Эндпоинты:
-  Обучение:
-    POST /api/train          — обучение из Excel/CSV
-    POST /api/train/json     — обучение из JSON
-
-  Скоринг:
-    POST /api/score          — скоринг заявок из Excel/CSV
-    POST /api/score/json     — скоринг заявок из JSON
-    GET  /api/template       — скачать Excel-шаблон
-
-  Заявки:
-    GET  /api/applications       — список оценённых заявок
-    GET  /api/applications/{id}  — детали заявки + SHAP
-
-  Аналитика:
-    GET  /api/analytics/summary       — сводная статистика
-    GET  /api/analytics/distribution  — гистограмма скоров
-    GET  /api/analytics/features      — важность признаков
-    GET  /api/analytics/fairness      — fairness-отчёт
-
-  Модели:
-    GET  /api/models            — список обученных моделей
-    POST /api/models/activate   — активировать модель
-
-  Ошибки:
-    GET  /api/errors            — лог ошибок очистки
-    GET  /api/errors/summary    — сводка ошибок
-    GET  /api/errors/traces     — список загрузок
-
-  Экспорт:
-    GET  /api/export            — экспорт результатов в Excel
-
-  Health:
-    GET  /health                — health-check
+Точка входа FastAPI приложения AgriScore.
+Содержит конфигурацию CORS, подключение роутеров,
+JSON-сериализацию numpy-типов и health-check.
 """
 
 from fastapi import FastAPI
@@ -50,56 +15,48 @@ import numpy as np
 
 from app.config import DB_PATH, API_TITLE, API_VERSION
 from app.database import Database, ModelRepository
+from app.routers import (
+    train, score, template, applications,
+    analytics, errors, models_rt, export, shortlist, thresholds,
+)
 
-# Роутеры
-from app.routers import train, score, template, applications, analytics, errors, models_rt, export, shortlist
+
+def _sanitize_value(v):
+    """Заменяет float NaN/Inf на None."""
+    if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+        return None
+    return v
+
+
+def _sanitize_recursive(obj):
+    """Рекурсивно заменяет NaN/Inf на None в произвольной структуре."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_recursive(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_recursive(v) for v in obj]
+    return _sanitize_value(obj)
 
 
 class NumpyEncoder(json.JSONEncoder):
-    """JSON encoder, поддерживающий numpy типы (включая NaN/Inf → null)."""
+    """JSON encoder, поддерживающий numpy типы (NaN/Inf -> null)."""
     def default(self, obj):
         if isinstance(obj, np.integer):
             return int(obj)
         if isinstance(obj, np.floating):
             v = float(obj)
-            if np.isnan(v) or np.isinf(v):
-                return None
-            return v
+            return _sanitize_value(v)
         if isinstance(obj, np.ndarray):
-            return self._sanitize_list(obj.tolist())
+            return _sanitize_recursive(obj.tolist())
         if isinstance(obj, np.bool_):
             return bool(obj)
         return super().default(obj)
 
-    @staticmethod
-    def _sanitize_list(lst):
-        """Заменяет NaN/Inf на None в списках (результат ndarray.tolist())."""
-        result = []
-        for v in lst:
-            if isinstance(v, list):
-                result.append(NumpyEncoder._sanitize_list(v))
-            elif isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
-                result.append(None)
-            else:
-                result.append(v)
-        return result
 
 class NumpyJSONResponse(JSONResponse):
-    """JSONResponse с поддержкой numpy типов и NaN → null."""
-
-    @staticmethod
-    def _sanitize(obj):
-        """Рекурсивно заменяет float NaN/Inf на None."""
-        if isinstance(obj, dict):
-            return {k: NumpyJSONResponse._sanitize(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [NumpyJSONResponse._sanitize(v) for v in obj]
-        if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
-            return None
-        return obj
+    """JSONResponse с поддержкой numpy типов и NaN -> null."""
 
     def render(self, content) -> bytes:
-        content = self._sanitize(content)
+        content = _sanitize_recursive(content)
         return json.dumps(
             content,
             ensure_ascii=False,
@@ -116,10 +73,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# =========================
-# DATABASE (singleton)
-# =========================
-
 _db: Database | None = None
 
 
@@ -130,10 +83,6 @@ def get_db() -> Database:
         _db.init_schema()
     return _db
 
-
-# =========================
-# APP FACTORY
-# =========================
 
 app = FastAPI(
     title=API_TITLE,
@@ -148,12 +97,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Инициализация БД при старте
 get_db()
-
-# =========================
-# ROUTERS
-# =========================
 
 app.include_router(train.router)
 app.include_router(score.router)
@@ -164,10 +108,7 @@ app.include_router(errors.router)
 app.include_router(models_rt.router)
 app.include_router(export.router)
 app.include_router(shortlist.router)
-
-# =========================
-# HEALTH CHECK
-# =========================
+app.include_router(thresholds.router)
 
 
 @app.get("/health")

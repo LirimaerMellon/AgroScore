@@ -1,3 +1,5 @@
+"""Инициализация рабочих директорий и БД при запуске."""
+
 from app.config import (
     MODELS_DIR,
     DEBUG_DIR,
@@ -5,9 +7,9 @@ from app.config import (
     FEATURES_DIR,
     RAW_DATA_DIR,
     DATA_DIR,
+    DB_PATH,
 )
 from app.database import Database
-from app.config import DB_PATH
 
 
 def init_directories():

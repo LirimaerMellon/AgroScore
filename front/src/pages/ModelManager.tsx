@@ -1,38 +1,77 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Box, Card, CardContent, Typography, Button, Stack, Alert, Chip, LinearProgress,
-  Table, TableHead, TableBody, TableRow, TableCell, TableContainer, CircularProgress,
-  Grid, MenuItem, TextField, Collapse, Tooltip, IconButton,
+  Table, TableHead, TableBody, TableRow, TableCell, TableContainer, TableSortLabel, CircularProgress,
+  Tooltip,
 } from "@mui/material";
 import {
-  CloudUpload, CheckCircle, Refresh, PlayArrow, ExpandMore, ExpandLess,
-  School, ModelTraining, Info,
+  CloudUpload, CheckCircle, Refresh, PlayArrow,
+  School, ModelTraining, Info, ArrowDownward,
 } from "@mui/icons-material";
 import {
-  fetchModels, activateModel, trainFromFile, type ModelInfo,
+  fetchModels, trainFromFile, type ModelInfo,
 } from "../data/api";
+import { METRIC_TOOLTIPS } from "../data/metricTooltips";
+import { useModel } from "../data/ModelContext";
 
-function MetricChip({ label, value }: { label: string; value: string }) {
-  return (
+/* ── Метрики, отображаемые как целое число (без %) ── */
+const INTEGER_METRICS = new Set([
+  "total_tp", "total_fp", "total_tn", "total_fn", "train_size", "n_features",
+]);
+
+/* ── Метрики log loss — десятичные дроби без % ── */
+const LOG_LOSS_METRICS = new Set(["log_loss_mean", "log_loss_std"]);
+
+function MetricChip({ label, value, tooltip }: { label: string; value: string; tooltip?: string }) {
+  const chip = (
     <Chip
       size="small"
       variant="outlined"
       label={<><b>{label}:</b> {value}</>}
-      sx={{ fontFamily: "'JetBrains Mono'", fontSize: "0.7rem" }}
+      sx={{ fontFamily: "'JetBrains Mono'", fontSize: "0.7rem", cursor: tooltip ? "help" : undefined }}
     />
+  );
+
+  if (!tooltip) return chip;
+
+  return (
+    <Tooltip
+      title={tooltip}
+      enterDelay={300}
+      leaveDelay={0}
+      arrow
+      slotProps={{
+        tooltip: {
+          sx: {
+            bgcolor: "rgba(30,30,30,0.95)",
+            color: "#fff",
+            maxWidth: 280,
+            borderRadius: 1.5,
+            fontSize: "0.78rem",
+            lineHeight: 1.45,
+            px: 1.5,
+            py: 1,
+          },
+        },
+        arrow: { sx: { color: "rgba(30,30,30,0.95)" } },
+      }}
+    >
+      {chip}
+    </Tooltip>
   );
 }
 
 export function ModelManager() {
+  const { refreshModels: refreshGlobalModels, switchModel } = useModel();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState("");
   const [actionError, setActionError] = useState("");
   const [training, setTraining] = useState(false);
   const [trainResult, setTrainResult] = useState<any>(null);
-  const [baseModel, setBaseModel] = useState<string>("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [expandedModel, setExpandedModel] = useState<number | null>(null);
+  const [sortField, setSortField] = useState<"created_at" | "positive_rate">("created_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function loadModels() {
@@ -48,10 +87,22 @@ export function ModelManager() {
 
   const activeModel = models.find((m) => m.is_active);
 
+  function toggleSort(field: "created_at" | "positive_rate") {
+    if (sortField === field) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortField(field); setSortDir("desc"); }
+  }
+
+  const sortedModels = [...models].sort((a, b) => {
+    let cmp = 0;
+    if (sortField === "created_at") cmp = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    else cmp = a.positive_rate - b.positive_rate;
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+
   async function handleActivate(version: string) {
     setActionMsg(""); setActionError("");
     try {
-      await activateModel(version);
+      await switchModel(version);
       setActionMsg(`Модель ${version} активирована`);
       await loadModels();
     } catch (e: any) {
@@ -62,18 +113,21 @@ export function ModelManager() {
   async function handleTrain(file: File) {
     setTraining(true); setTrainResult(null); setActionError(""); setActionMsg("");
     try {
-      const res = await trainFromFile(file, baseModel || undefined);
+      const res = await trainFromFile(file);
       setTrainResult(res);
       setActionMsg(`Модель ${res.model_version} обучена успешно`);
       await loadModels();
+      await refreshGlobalModels();
     } catch (e: any) {
       setActionError(e.message || "Ошибка обучения");
     }
     setTraining(false);
   }
 
-  const fmtMetric = (v: any) => {
+  const fmtMetric = (v: any, key?: string) => {
     if (typeof v !== "number") return String(v);
+    if (key && INTEGER_METRICS.has(key)) return v.toLocaleString("ru");
+    if (key && LOG_LOSS_METRICS.has(key)) return v.toFixed(3);
     return v > 1 ? v.toFixed(0) : (v * 100).toFixed(1) + "%";
   };
 
@@ -81,6 +135,14 @@ export function ModelManager() {
   const metricLabels: Record<string, string> = {
     auc_mean: "AUC", f1_mean: "F1", precision_mean: "Precision",
     recall_mean: "Recall", accuracy_mean: "Accuracy", gini_mean: "Gini",
+    auc_std: "AUC (std)", f1_std: "F1 (std)", precision_std: "Precision (std)",
+    recall_std: "Recall (std)", accuracy_std: "Accuracy (std)", gini_std: "Gini (std)",
+    log_loss_mean: "Log Loss", log_loss_std: "Log Loss (std)",
+    avg_precision_mean: "Avg Precision", avg_precision_std: "Avg Precision (std)",
+    total_tp: "True Positives", total_fp: "False Positives",
+    total_tn: "True Negatives", total_fn: "False Negatives",
+    train_size: "Выборка", n_features: "Признаков",
+    positive_rate: "Positive Rate",
   };
 
   return (
@@ -105,14 +167,14 @@ export function ModelManager() {
                     Активная модель: <b>{activeModel.version}</b>
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Обучена {new Date(activeModel.created_at).toLocaleString("ru")} · {activeModel.train_size} записей · {activeModel.n_features} признаков
+                    Обучена {new Date(activeModel.created_at).toLocaleString("ru")} · {activeModel.train_size.toLocaleString("ru")} записей · {activeModel.n_features} признаков
                   </Typography>
                 </Box>
               </Stack>
               <Stack direction="row" spacing={1} mt={1.5} flexWrap="wrap" useFlexGap>
                 {keyMetrics.map((key) =>
                   activeModel.metrics[key] != null && (
-                    <MetricChip key={key} label={metricLabels[key] || key} value={fmtMetric(activeModel.metrics[key])} />
+                    <MetricChip key={key} label={metricLabels[key] || key} value={fmtMetric(activeModel.metrics[key], key)} tooltip={METRIC_TOOLTIPS[key]} />
                   )
                 )}
               </Stack>
@@ -139,35 +201,6 @@ export function ModelManager() {
               Модель обучится автоматически и станет активной.
             </Typography>
 
-            {/* Advanced: fine-tuning */}
-            <Button
-              size="small" variant="text"
-              startIcon={showAdvanced ? <ExpandLess /> : <ExpandMore />}
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              sx={{ mb: 1, textTransform: "none", color: "text.secondary" }}
-            >
-              Дополнительные параметры
-            </Button>
-
-            <Collapse in={showAdvanced}>
-              <Box sx={{ mb: 2, p: 2, bgcolor: "#fafafa", borderRadius: 2, border: "1px solid #f0f0f0" }}>
-                <TextField
-                  select fullWidth size="small"
-                  label="Базовая модель для дообучения (fine-tuning)"
-                  value={baseModel}
-                  onChange={(e) => setBaseModel(e.target.value)}
-                  helperText="Оставьте пустым для обучения с нуля, или выберите модель для дообучения на новых данных"
-                >
-                  <MenuItem value="">Обучение с нуля</MenuItem>
-                  {models.map((m) => (
-                    <MenuItem key={m.version} value={m.version}>
-                      {m.version} {m.is_active ? " (активная)" : ""} — {m.train_size} записей
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Box>
-            </Collapse>
-
             <Stack direction="row" spacing={2} alignItems="center">
               <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" hidden
                 onChange={(e) => { if (e.target.files?.[0]) handleTrain(e.target.files[0]); e.target.value = ""; }} />
@@ -175,13 +208,6 @@ export function ModelManager() {
                 onClick={() => fileRef.current?.click()}>
                 {training ? "Обучение…" : "Загрузить данные для обучения"}
               </Button>
-              {baseModel && (
-                <Chip
-                  size="small" variant="outlined" color="info"
-                  label={`Fine-tuning от: ${baseModel}`}
-                  onDelete={() => setBaseModel("")}
-                />
-              )}
             </Stack>
             {training && <LinearProgress sx={{ mt: 2, borderRadius: 2 }} />}
 
@@ -198,15 +224,6 @@ export function ModelManager() {
                     <Typography variant="body2">
                       <b>Данные:</b> {trainResult.total_raw_records} исходных → {trainResult.cleaned_records} очищенных
                     </Typography>
-                    {trainResult.metrics && (
-                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap mt={0.5}>
-                        {keyMetrics.map((key) =>
-                          trainResult.metrics[key] != null && (
-                            <MetricChip key={key} label={metricLabels[key] || key} value={fmtMetric(trainResult.metrics[key])} />
-                          )
-                        )}
-                      </Stack>
-                    )}
                   </Stack>
                 </CardContent>
               </Card>
@@ -234,16 +251,24 @@ export function ModelManager() {
                 <TableHead>
                   <TableRow>
                     <TableCell>Версия</TableCell>
-                    <TableCell>Дата создания</TableCell>
+                    <TableCell sortDirection={sortField === "created_at" ? sortDir : false}>
+                      <TableSortLabel active={sortField === "created_at"} direction={sortField === "created_at" ? sortDir : "asc"} onClick={() => toggleSort("created_at")}>
+                        Дата создания
+                      </TableSortLabel>
+                    </TableCell>
                     <TableCell align="right">Выборка</TableCell>
                     <TableCell align="right">Признаков</TableCell>
-                    <TableCell align="right">Positive rate</TableCell>
+                    <TableCell align="right" sortDirection={sortField === "positive_rate" ? sortDir : false}>
+                      <TableSortLabel active={sortField === "positive_rate"} direction={sortField === "positive_rate" ? sortDir : "asc"} onClick={() => toggleSort("positive_rate")}>
+                        Positive rate
+                      </TableSortLabel>
+                    </TableCell>
                     <TableCell>Статус</TableCell>
                     <TableCell width={140} />
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {models.map((m) => (
+                  {sortedModels.map((m) => (
                     <>
                       <TableRow
                         key={m.id}
@@ -280,7 +305,7 @@ export function ModelManager() {
                             <Typography variant="caption" fontWeight={600} display="block" mb={1}>Метрики модели</Typography>
                             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                               {Object.entries(m.metrics).map(([key, val]) => (
-                                <MetricChip key={key} label={metricLabels[key] || key} value={fmtMetric(val)} />
+                                <MetricChip key={key} label={metricLabels[key] || key} value={fmtMetric(val, key)} tooltip={METRIC_TOOLTIPS[key]} />
                               ))}
                             </Stack>
                           </TableCell>

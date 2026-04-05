@@ -1,73 +1,61 @@
 # AgriScore
 
-**Система скоринга заявок на сельскохозяйственные субсидии** на основе машинного обучения (LightGBM) с объяснимостью решений (SHAP).
+Система скоринга заявок на сельскохозяйственные субсидии на основе LightGBM с объяснимостью решений через SHAP.
 
 ---
 
-## Обзор
+## Стек технологий
 
-AgriScore — это REST API сервис, который:
-
-- **Обучает** модель на исторических данных о субсидиях (одобрены / отклонены)
-- **Оценивает** новые заявки по 100-балльной шкале
-- **Объясняет** каждое решение через SHAP-факторы
-- **Отслеживает** ошибки данных и версии моделей
-- **Обеспечивает** fairness-контроль по регионам и типам субсидий
+- Python 3.10+
+- FastAPI + Uvicorn (REST API)
+- LightGBM (градиентный бустинг)
+- SHAP (объяснимость решений)
+- scikit-learn (метрики, кросс-валидация, LabelEncoder)
+- pandas + openpyxl (работа с данными и Excel)
+- SQLite (хранение данных)
+- React + Vite + TypeScript (фронтенд)
 
 ---
 
-## Быстрый старт
+## Как запустить
 
-### 1. Установка
+### Бэкенд
 
 ```bash
-# Python 3.10+
 pip install -r requirements.txt
-```
-
-### 2. Обучение модели
-
-Положите Excel-файл с историческими данными в папку `data/raw/` и запустите CLI-скрипт:
-
-```bash
-python tests/train.py --input data/raw/ваш_файл.xlsx
-```
-
-Скрипт выполнит полный цикл: загрузка → очистка → feature engineering → обучение → сохранение модели. Результат (версия модели, метрики AUC/F1, trace_id ошибок) выводится в консоль.
-
-Для дообучения поверх существующей модели:
-
-```bash
-python tests/train.py --input data/raw/ваш_файл.xlsx --model-version версия_модели
-```
-
-### 3. Запуск сервера
-
-```bash
 python run.py
 ```
 
-Сервер стартует на `http://127.0.0.1:8000`. Swagger-документация: `http://127.0.0.1:8000/docs`.
+Сервер: `http://127.0.0.1:8000`  
+Swagger-документация: `http://127.0.0.1:8000/docs`
 
-### 4. Обучение через API (альтернативный способ)
-
-При запущенном сервере можно отправить файл напрямую через API — без необходимости класть его в папку:
+### Обучение модели (CLI)
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/train -F "file=@ваш_файл.xlsx"
+python tests/train.py --input data/raw/файл.xlsx
 ```
 
-Файл обрабатывается в памяти и **не сохраняется** в `data/raw/`.
+### Обучение модели (API)
 
-### 5. Скоринг заявок
+```bash
+curl -X POST http://127.0.0.1:8000/api/train -F "file=@файл.xlsx"
+```
 
-Скоринг работает только через API при запущенном сервере. Отправьте файл с заявками (по шаблону из `GET /api/template`):
+### Скоринг заявок
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/score -F "file=@заявки.xlsx"
 ```
 
-Каждая заявка получит оценку 0–100, категорию (HIGH / MEDIUM / LOW) и SHAP-объяснение.
+### Фронтенд
+
+```bash
+cd front
+npm install
+npm run dev
+```
+
+Фронтенд: `http://localhost:5173`. API-запросы проксируются на бэкенд.
 
 ---
 
@@ -75,58 +63,53 @@ curl -X POST http://127.0.0.1:8000/api/score -F "file=@заявки.xlsx"
 
 ```
 AgriScore/
-│
-├── run.py                  # Точка входа — запуск FastAPI (uvicorn)
-├── requirements.txt        # Python-зависимости
-├── README.md
-│
-├── app/                    # Основной пакет приложения
-│   ├── __init__.py
-│   ├── main.py             # FastAPI app, роутеры, health-check
-│   ├── config.py           # Все настройки: пути, колонки, параметры модели
-│   ├── schemas.py          # Pydantic-схемы запросов и ответов
-│   ├── setup_dirs.py       # Инициализация директорий при старте
-│   │
-│   ├── pipeline/           # ML-пайплайн
-│   │   ├── loader.py       # Загрузка данных (Excel/CSV/JSON, автодетекция заголовков)
-│   │   ├── mapper.py       # Маппинг русских колонок → internal names
-│   │   ├── validators.py   # Валидаторы: is_strict_number, is_valid_text
-│   │   ├── cleaner.py      # Очистка данных + логирование ошибок в SQLite
-│   │   ├── features.py     # Feature engineering (fit/transform архитектура)
-│   │   ├── model.py        # LightGBM: обучение, скоринг, fairness, сериализация
-│   │   └── explainer.py    # SHAP-объяснения для каждой заявки
-│   │
-│   ├── services/           # Бизнес-логика (оркестрация pipeline + DB)
-│   │   ├── training.py     # TrainingService — полный цикл обучения
-│   │   └── scoring.py      # ScoringService — полный цикл скоринга
-│   │
-│   ├── database/           # Слой данных (SQLite)
-│   │   ├── connection.py   # Database — подключение, миграции, WAL-режим
-│   │   ├── repository.py   # ErrorLogRepository — лог ошибок очистки
-│   │   ├── model_repository.py  # ModelRepository — реестр моделей
-│   │   └── app_repository.py    # ApplicationRepository — оценённые заявки
-│   │
-│   └── routers/            # API-эндпоинты (FastAPI Router)
-│       ├── train.py        # POST /api/train, /api/train/json
-│       ├── score.py        # POST /api/score, /api/score/json
-│       ├── template.py     # GET  /api/template
-│       ├── applications.py # GET  /api/applications, /api/applications/{id}
-│       ├── analytics.py    # GET  /api/analytics/*
-│       ├── models_rt.py    # GET  /api/models, POST /api/models/activate, DELETE /api/admin/reset
-│       ├── errors.py       # GET  /api/errors, /api/errors/summary, /api/errors/traces
-│       └── export.py       # GET  /api/export
-│
-├── data/                   # Данные и артефакты (не в git)
-│   ├── agriscore.db        # SQLite база данных
-│   ├── raw/                # Исходные файлы для обучения
-│   ├── models/             # Сохранённые модели (.pkl)
-│   ├── features/           # Сохранённые feature engineers
-│   ├── results/            # Результаты скоринга
-│   └── debug/              # Промежуточные файлы для отладки
-│
-└── tests/                  # Тестовые скрипты
-    ├── test_api.py         # Интеграционный тест всех API-эндпоинтов
-    └── train.py            # CLI-скрипт обучения (без сервера)
+├── run.py                     # Точка входа (uvicorn)
+├── requirements.txt
+├── app/
+│   ├── main.py                # FastAPI-приложение, CORS, health-check
+│   ├── config.py              # Пути, колонки, параметры модели, бизнес-правила
+│   ├── schemas.py             # Pydantic-схемы запросов и ответов
+│   ├── setup_dirs.py          # Инициализация директорий при старте
+│   ├── pipeline/
+│   │   ├── loader.py          # Загрузка данных (Excel/CSV/JSON)
+│   │   ├── mapper.py          # Маппинг русских колонок в internal names
+│   │   ├── validators.py      # Валидация значений ячеек
+│   │   ├── cleaner.py         # Очистка данных, логирование ошибок в SQLite
+│   │   ├── features.py        # Feature engineering (fit/transform)
+│   │   ├── model.py           # LightGBM: обучение, скоринг, fairness
+│   │   └── explainer.py       # SHAP-объяснения (калиброванные и legacy)
+│   ├── services/
+│   │   ├── training.py        # Оркестрация обучения
+│   │   └── scoring.py         # Оркестрация скоринга
+│   ├── database/
+│   │   ├── connection.py      # SQLite: подключение, миграции, WAL-режим
+│   │   ├── repository.py      # ErrorLogRepository (лог ошибок)
+│   │   ├── model_repository.py    # ModelRepository (реестр моделей)
+│   │   ├── app_repository.py      # ApplicationRepository (заявки)
+│   │   ├── shap_repository.py     # ShapRepository (SHAP-данные)
+│   │   └── threshold_repository.py # ThresholdRepository (пороги, бюджет)
+│   └── routers/
+│       ├── train.py           # POST /api/train, /api/train/json
+│       ├── score.py           # POST /api/score, /api/score/json
+│       ├── template.py        # GET  /api/template
+│       ├── applications.py    # GET  /api/applications, /{id}, /{id}/shap
+│       ├── analytics.py       # GET  /api/analytics/*
+│       ├── models_rt.py       # GET  /api/models, POST /api/models/activate
+│       ├── errors.py          # GET  /api/errors, /summary, /traces
+│       ├── export.py          # GET  /api/export
+│       ├── shortlist.py       # GET  /api/shortlist
+│       └── thresholds.py      # GET/PUT /api/thresholds, /api/round-budget
+├── data/                      # Данные и артефакты (не в git)
+│   ├── agriscore.db
+│   ├── raw/
+│   ├── models/
+│   ├── features/
+│   ├── results/
+│   └── debug/
+├── front/                     # React + Vite фронтенд
+└── tests/
+    ├── test_api.py            # Интеграционный тест всех эндпоинтов
+    └── train.py               # CLI-скрипт обучения
 ```
 
 ---
@@ -137,18 +120,17 @@ AgriScore/
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `GET` | `/health` | Статус сервера и активной модели |
+| GET | `/health` | Статус сервера и активной модели |
 
 ### Обучение
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `POST` | `/api/train` | Обучение модели из Excel/CSV файла |
-| `POST` | `/api/train/json` | Обучение модели из JSON body |
+| POST | `/api/train` | Обучение из Excel/CSV файла |
+| POST | `/api/train/json` | Обучение из JSON body |
 
 **Параметры `/api/train`:**
 - `file` (multipart) — Excel (.xlsx) или CSV файл с историческими данными
-- `model_version` (опционально) — версия базовой модели для дообучения (fine-tuning)
 
 **Ответ** содержит: версию модели, метрики (AUC, F1, Precision, Recall, Gini), fairness-отчёт, важность признаков, `trace_id` для просмотра ошибок очистки.
 
@@ -156,9 +138,9 @@ AgriScore/
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `POST` | `/api/score` | Скоринг заявок из Excel/CSV |
-| `POST` | `/api/score/json` | Скоринг заявок из JSON body |
-| `GET` | `/api/template` | Скачать Excel-шаблон для заполнения |
+| POST | `/api/score` | Скоринг заявок из Excel/CSV |
+| POST | `/api/score/json` | Скоринг заявок из JSON body |
+| GET | `/api/template` | Скачать Excel-шаблон для заполнения |
 
 **Параметры `/api/score`:**
 - `file` (multipart) — файл по шаблону (без столбцов «Дата поступления», «Статус заявки», «Номер заявки»)
@@ -170,8 +152,10 @@ AgriScore/
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `GET` | `/api/applications` | Список оценённых заявок (пагинация, фильтры, сортировка) |
-| `GET` | `/api/applications/{id}` | Детали заявки с полным SHAP-объяснением |
+| GET | `/api/applications` | Список оценённых заявок (пагинация, фильтры) |
+| GET | `/api/applications/{id}` | Детали заявки |
+| GET | `/api/applications/{id}/shap` | SHAP-объяснение оценки |
+| GET | `/api/applications/{id}/analysis` | Сравнение с аналогами, перцентиль |
 
 **Фильтры для `/api/applications`:**
 - `limit`, `offset` — пагинация
@@ -183,104 +167,73 @@ AgriScore/
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `GET` | `/api/analytics/summary` | Сводная статистика: среднее, медиана, мин/макс, распределение по категориям |
-| `GET` | `/api/analytics/distribution` | Гистограмма скоров (параметр `bins`, по умолчанию 10) |
-| `GET` | `/api/analytics/features` | Важность признаков из активной модели |
-| `GET` | `/api/analytics/fairness` | Fairness-отчёт: средний скор по регионам, типам субсидий, disparate impact |
+| GET | `/api/analytics/summary` | Сводная статистика |
+| GET | `/api/analytics/distribution` | Гистограмма скоров |
+| GET | `/api/analytics/features` | Важность признаков |
+| GET | `/api/analytics/fairness` | Fairness-отчёт (disparate impact) |
+| GET | `/api/analytics/by-month` | Динамика по месяцам |
+| GET | `/api/analytics/avg-score-by-region` | Средний балл по регионам |
+| GET | `/api/analytics/avg-score-by-direction` | Средний балл по направлениям |
+| GET | `/api/analytics/available-years` | Доступные годы |
 
 ### Модели
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `GET` | `/api/models` | Список всех обученных моделей |
-| `POST` | `/api/models/activate?version=...` | Активировать конкретную модель |
+| GET | `/api/models` | Список обученных моделей |
+| POST | `/api/models/activate?version=...` | Активировать модель |
 
-### Администрирование
+### Шорт-лист
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `DELETE` | `/api/admin/reset` | Полная очистка БД и удаление файлов моделей |
+| GET | `/api/shortlist` | Ранжирование заявок в рамках бюджета |
 
-**Параметры `/api/admin/reset`** (все по умолчанию `true`):
-- `applications` — очистить таблицу заявок
-- `models` — очистить таблицу моделей и удалить `.pkl` файлы с диска
-- `errors` — очистить лог ошибок
+### Пороги и бюджет
 
-Примеры:
-```bash
-# Полный сброс (всё)
-curl -X DELETE "http://127.0.0.1:8000/api/admin/reset"
-
-# Только заявки (модели и ошибки оставить)
-curl -X DELETE "http://127.0.0.1:8000/api/admin/reset?models=false&errors=false"
-
-# Только модели
-curl -X DELETE "http://127.0.0.1:8000/api/admin/reset?applications=false&errors=false"
-```
-
-> После сброса моделей потребуется заново обучить модель через `POST /api/train`.
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET | `/api/thresholds` | Текущие пороги категорий |
+| PUT | `/api/thresholds` | Обновить пороги |
+| POST | `/api/thresholds/reset` | Сброс к дефолтным |
+| POST | `/api/thresholds/preview` | Предпросмотр распределения |
+| GET | `/api/round-budget` | Текущий бюджет раунда |
+| PUT | `/api/round-budget` | Обновить бюджет |
 
 ### Ошибки данных
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `GET` | `/api/errors` | Лог невалидных строк (с пагинацией, фильтр по `trace_id`) |
-| `GET` | `/api/errors/summary` | Сводка: количество ошибок по типам и колонкам |
-| `GET` | `/api/errors/traces` | Список загрузок с числом ошибок в каждой |
+| GET | `/api/errors` | Лог невалидных строк |
+| GET | `/api/errors/summary` | Сводка ошибок по типам и колонкам |
+| GET | `/api/errors/traces` | Список загрузок с числом ошибок |
 
 ### Экспорт
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| `GET` | `/api/export` | Экспорт всех оценённых заявок в Excel (фильтры: `model_version`, `category`) |
+| GET | `/api/export` | Экспорт заявок в Excel |
+
+### Администрирование
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| DELETE | `/api/admin/reset` | Очистка БД и удаление файлов моделей |
 
 ---
 
-## ML-пайплайн
+## Конфигурация
 
-### Поток обучения
+Все настройки находятся в `app/config.py`:
 
-```
-Excel/CSV → DataLoader → ColumnMapper → DataCleaner → TargetVariable
-          → FeatureEngineer (fit_transform) → ScoringModel (train)
-          → Fairness report → Сохранение на диск + БД
-```
-
-### Поток скоринга
-
-```
-Excel/CSV/JSON → DataLoader → ColumnMapper → DataCleaner (inference)
-               → FeatureEngineer (transform) → ScoringModel (score)
-               → SHAP-объяснения → Сохранение в БД
-```
-
-### Модель
-
-- **Алгоритм:** LightGBM (gradient boosting)
-- **Кросс-валидация:** StratifiedKFold, 5 фолдов
-- **Метрики:** AUC-ROC, F1, Precision, Recall, Accuracy, Gini, Log-loss
-- **Fine-tuning:** поддержка дообучения через `init_model`
-- **Сериализация:** pickle (модель + label encoders + FeatureEngineer)
-
-### Признаки (Feature Engineering)
-
-| Группа | Признаки |
-|--------|----------|
-| **Approval rates** | Smoothed approval rate по региону, акимату, направлению, типу субсидии, району |
-| **Финансовые агрегаты** | Сумма, среднее, медиана, std суммы субсидии по группам |
-| **Соотношения** | amount / normative |
-| **Логарифмы** | log(amount), log(normative) |
-| **Временные** | Дней с подачи, месяц, квартал, день недели |
-| **Ранги** | Перцентильный ранг суммы внутри региона / типа субсидии |
-| **Z-score** | Отклонение суммы от среднего по группе |
-| **Взаимодействия** | region × direction, region × subsidy_type |
-
-### Объяснимость (SHAP)
-
-Для каждой заявки при скоринге рассчитывается SHAP-объяснение:
-- **top_factors** — 5 главных факторов, влияющих на оценку
-- **all_factors** — полный список SHAP-значений по всем признакам
-- **direction** — positive (повышает скор) или negative (понижает)
+| Параметр | Описание |
+|----------|----------|
+| `MODEL_PARAMS` | Гиперпараметры LightGBM |
+| `COLUMN_RENAME_MAP` | Маппинг русских заголовков в internal |
+| `APPROVED_STATUSES` | Статусы, считающиеся одобренными |
+| `REJECTED_STATUSES` | Статусы, считающиеся отклонёнными |
+| `SCORE_MIN / SCORE_MAX` | Диапазон скоринга (0-100) |
+| `TEMPLATE_COLUMNS` | Заголовки Excel-шаблона для скоринга |
 
 ---
 
@@ -305,26 +258,7 @@ Excel-файл с русскими заголовками:
 
 ### Для скоринга
 
-Файл по шаблону (скачать через `GET /api/template`):
-
-| Столбец | Тип | Описание |
-|---------|-----|----------|
-| Область | текст | Область подачи |
-| Акимат | текст | Акимат |
-| Направление водства | текст | Направление хозяйства |
-| Наименование субсидирования | текст | Тип субсидии |
-| Норматив | число | Нормативная стоимость (> 0) |
-| Причитающая сумма | число | Запрашиваемая сумма (> 0) |
-| Район хозяйства | текст | Район |
-| БИН/ИИН | текст | Идентификатор заявителя |
-
-### Формирование целевой переменной
-
-| Статус заявки | target |
-|---------------|--------|
-| Исполнена, Одобрена | 1 (approved) |
-| Отклонена, Отозвано | 0 (rejected) |
-| Получена, Сформировано получение | исключается из обучения |
+Файл по шаблону (`GET /api/template`), без столбцов «Дата поступления», «Статус заявки», «Номер заявки». Добавляется столбец «БИН/ИИН».
 
 ---
 
@@ -332,141 +266,20 @@ Excel-файл с русскими заголовками:
 
 | Категория | Диапазон | Описание |
 |-----------|----------|----------|
-| **HIGH** | 70–100 | Высокая вероятность одобрения |
-| **MEDIUM** | 40–70 | Средняя вероятность |
-| **LOW** | 0–40 | Низкая вероятность |
+| HIGH | 70-100 | Высокая вероятность одобрения |
+| MEDIUM | 40-69 | Средняя вероятность |
+| LOW | 0-39 | Низкая вероятность |
 
----
-
-## Обработка ошибок данных
-
-При очистке невалидные строки не теряются — каждая сохраняется в `error_logs` с полным контекстом:
-
-| Код ошибки | Описание |
-|------------|----------|
-| `empty_row` | Полностью пустая строка |
-| `required_field` | Отсутствует обязательное поле |
-| `duplicate` | Дублирующая запись |
-| `invalid_date` | Некорректный формат даты |
-| `invalid_format` | Значение не является числом |
-| `non_positive_value` | Значение ≤ 0 |
-| `invalid_text` | Пустое или невалидное текстовое значение |
-| `intermediate_status` | Заявка с промежуточным статусом |
-
-Все ошибки привязаны к `trace_id` загрузки и доступны через API.
-
----
-
-## База данных (SQLite)
-
-Файл: `data/agriscore.db`
-
-| Таблица | Назначение |
-|---------|------------|
-| `models` | Реестр обученных моделей (версия, метрики, путь, is_active) |
-| `applications` | Оценённые заявки (скор, категория, SHAP) |
-| `error_logs` | Лог ошибок очистки данных |
-
-- WAL-режим для параллельного чтения
-- Автоматическая миграция при запуске
+Пороги настраиваются через API (`PUT /api/thresholds`).
 
 ---
 
 ## Тестирование
 
 ```bash
-# 1. Положите Excel-файл с данными в data/raw/
-# 2. Запустите сервер
 python run.py
-
-# 3. В другом терминале — интеграционный тест всех эндпоинтов
+# В другом терминале:
 python tests/test_api.py
 ```
 
-Тест автоматически находит `.xlsx` файл в `data/raw/`, обучает модель, прогоняет скоринг и проверяет все 16+ эндпоинтов: health, train, score, applications, analytics, models, errors, export, template.
-
----
-
-## Конфигурация
-
-Все настройки сосредоточены в `app/config.py`:
-
-| Параметр | Описание |
-|----------|----------|
-| `MODEL_PARAMS` | Гиперпараметры LightGBM (n_estimators, max_depth, learning_rate) |
-| `COLUMN_RENAME_MAP` | Маппинг русских заголовков → internal |
-| `APPROVED_STATUSES` | Статусы, считающиеся одобренными |
-| `REJECTED_STATUSES` | Статусы, считающиеся отклонёнными |
-| `SCORE_MIN / SCORE_MAX` | Диапазон скоринга (0–100) |
-| `TEMPLATE_COLUMNS` | Заголовки Excel-шаблона для скоринга |
-
----
-
-## Зависимости
-
-| Пакет | Назначение |
-|-------|------------|
-| FastAPI + Uvicorn | REST API сервер |
-| Pydantic | Валидация входных данных |
-| pandas + openpyxl | Работа с данными и Excel |
-| LightGBM | Gradient boosting модель |
-| scikit-learn | Метрики, кросс-валидация, LabelEncoder |
-| SHAP | Объяснимость решений модели |
-| python-multipart | Загрузка файлов через multipart/form-data |
-
----
-
-## Запуск проекта (бэкенд + фронтенд)
-
-### Бэкенд (FastAPI)
-
-```bash
-# 1. Установите Python-зависимости (Python 3.10+)
-pip install -r requirements.txt
-
-# 2. (Опционально) Обучите модель из CLI
-python tests/train.py --input data/raw/ваш_файл.xlsx
-
-# 3. Запустите сервер
-python run.py
-```
-
-Бэкенд стартует на `http://127.0.0.1:8000`.
-
-### Фронтенд (React + Vite)
-
-```bash
-# 1. Перейдите в папку фронтенда
-cd front
-
-# 2. Установите Node.js-зависимости
-npm install
-
-# 3. Запустите dev-сервер
-npm run dev
-```
-
-Фронтенд стартует на `http://localhost:5173`.  
-API-запросы автоматически проксируются на бэкенд (`http://127.0.0.1:8000`).
-
-### Одновременный запуск
-
-Откройте **два терминала**:
-
-| Терминал | Команда | Адрес |
-|----------|---------|-------|
-| 1 (бэкенд) | `python run.py` | `http://127.0.0.1:8000` |
-| 2 (фронтенд) | `cd front && npm run dev` | `http://localhost:5173` |
-
-> **Важно:** бэкенд должен быть запущен первым — фронтенд проксирует на него все API-запросы.
-
-### Сборка фронтенда для продакшена
-
-```bash
-cd front
-npm run build
-```
-
-Собранные статические файлы будут в `front/dist/` — их можно раздавать через nginx или встроить в FastAPI через `StaticFiles`.
-
----
+Тест автоматически обучает модель из `.xlsx` файла в `data/raw/`, прогоняет скоринг и проверяет все эндпоинты.

@@ -1,4 +1,6 @@
-export function ScoreGauge({ score, size = 160 }: { score: number; size?: number }) {
+export function ScoreGauge({ score, size = 160, category }: {
+  score: number; size?: number; category?: string;
+}) {
   const r = (size - 24) / 2;
   const cx = size / 2;
   const cy = size / 2;
@@ -6,17 +8,13 @@ export function ScoreGauge({ score, size = 160 }: { score: number; size?: number
   const filled = (score / 100) * circ;
   const offset = circ - filled;
 
-  const color =
-    score >= 70 ? "#22c55e" :
-    score >= 40 ? "#f59e0b" :
-    score >= 20 ? "#f97316" :
-    "#ef4444";
+  const color = category
+    ? (category === "HIGH" ? "#22c55e" : category === "MEDIUM" ? "#f59e0b" : "#ef4444")
+    : (score >= 71 ? "#22c55e" : score >= 31 ? "#f59e0b" : "#ef4444");
 
-  const label =
-    score >= 70 ? "Высокий приоритет" :
-    score >= 40 ? "Средний приоритет" :
-    score >= 20 ? "Низкий приоритет" :
-    "Не рекомендуется";
+  const label = category
+    ? (category === "HIGH" ? "Высокий приоритет" : category === "MEDIUM" ? "Средний приоритет" : "Низкий приоритет")
+    : (score >= 71 ? "Высокий приоритет" : score >= 31 ? "Средний приоритет" : "Низкий приоритет");
 
   return (
     <div className="flex flex-col items-center gap-3">

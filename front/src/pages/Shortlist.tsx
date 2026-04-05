@@ -1,12 +1,13 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { useNavigate } from "react-router";
 import {
   Box, Card, CardContent, Typography, Button, Grid, Stack, Alert,
   Table, TableHead, TableBody, TableRow, TableCell, TableContainer, Chip, LinearProgress,
 } from "@mui/material";
 import { Download, CloudUpload, CheckCircle, Warning } from "@mui/icons-material";
-import { downloadTemplate, scoreFromFile, downloadExport, fetchHealth } from "../data/api";
+import { downloadTemplate, scoreFromFile, downloadExport } from "../data/api";
 import { ScoreBadge } from "../components/ScoreBadge";
+import { useModel } from "../data/ModelContext";
 
 function fmt(n: number) {
   if (n >= 1e9) return `₸${(n / 1e9).toFixed(1)} млрд`;
@@ -16,28 +17,21 @@ function fmt(n: number) {
 
 export function Scoring() {
   const navigate = useNavigate();
+  const { modelVersion } = useModel();
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
-  const [modelLoaded, setModelLoaded] = useState<boolean | null>(null);
-  const [activeModel, setActiveModel] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchHealth()
-      .then((h) => {
-        setModelLoaded(h.model_loaded);
-        setActiveModel(h.active_model);
-      })
-      .catch(() => setModelLoaded(false));
-  }, [result]);
+  const modelLoaded = !!modelVersion;
+  const activeModel = modelVersion;
 
   async function handleUpload(file: File) {
     setUploading(true);
     setError("");
     setResult(null);
     try {
-      const res = await scoreFromFile(file);
+      const res = await scoreFromFile(file, modelVersion || undefined);
       setResult(res);
     } catch (e: any) {
       setError(e.message || "Ошибка скоринга");
@@ -56,7 +50,7 @@ export function Scoring() {
           <Typography variant="caption">Загрузите файл с заявками для AI-оценки или скачайте пустой шаблон</Typography>
         </Box>
 
-        {modelLoaded === false && (
+        {!modelLoaded && (
           <Alert
             severity="warning"
             icon={<Warning />}
@@ -74,7 +68,7 @@ export function Scoring() {
           </Alert>
         )}
 
-        {modelLoaded === true && activeModel && (
+        {modelLoaded && activeModel && (
           <Alert severity="success" sx={{ borderRadius: 2 }}>
             Активная модель: <b>{activeModel}</b> — готова к скорингу
           </Alert>
@@ -121,7 +115,7 @@ export function Scoring() {
         {/* Warnings about data quality */}
         {result?.warnings && result.warnings.length > 0 && (
           <Alert severity="warning" sx={{ borderRadius: 2 }}>
-            <Typography variant="body2" fontWeight={600}>⚠ Предупреждения о качестве данных</Typography>
+            <Typography variant="body2" fontWeight={600}>Предупреждения о качестве данных</Typography>
             {result.warnings.map((w: string, i: number) => (
               <Typography key={i} variant="caption" display="block">{w}</Typography>
             ))}

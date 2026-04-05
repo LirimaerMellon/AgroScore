@@ -1,33 +1,36 @@
 import { useNavigate } from "react-router";
-import { useState, useEffect } from "react";
-import { Box, Card, CardContent, Typography, Grid, Button, Stack, Avatar, CircularProgress } from "@mui/material";
+import { useState, useEffect, useCallback } from "react";
+import {
+  Box, Card, CardContent, Typography, Grid, Button, Stack, Avatar, CircularProgress,
+  TextField, MenuItem, Tooltip as MuiTooltip,
+} from "@mui/material";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell,
 } from "recharts";
-import { CheckCircle, Cancel, AccessTime, ListAlt, Insights, TrendingUp, CloudUpload, School, PlayArrow } from "@mui/icons-material";
-import { TextField, MenuItem } from "@mui/material";
+import { CheckCircle, Cancel, AccessTime, School, PlayArrow, Warning } from "@mui/icons-material";
 import {
-  fetchSummary, fetchDistribution, fetchModels,
+  fetchSummary, fetchDistribution,
   fetchByMonth, fetchAvgScoreByRegion, fetchAvgScoreByDirection,
   fetchAvailableYears,
-  type AnalyticsSummary, type DistributionBin, type ModelsResponse,
+  type AnalyticsSummary, type DistributionBin,
   type MonthStat, type RegionScoreStat, type DirectionScoreStat,
 } from "../data/api";
+import { useModel } from "../data/ModelContext";
 
 function fmt(n: number) {
-  if (n >= 1e9) return `₸${(n / 1e9).toFixed(1)} млрд`;
-  if (n >= 1e6) return `₸${(n / 1e6).toFixed(0)} млн`;
-  return `₸${n.toLocaleString("ru")}`;
+  if (n >= 1e9) return `₸ ${(n / 1e9).toFixed(1)} млрд`;
+  if (n >= 1e6) return `₸ ${(n / 1e6).toFixed(0)} млн`;
+  return `₸ ${n.toLocaleString("ru")}`;
 }
 
 function KpiCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
   return (
     <Card>
-      <CardContent sx={{ p: 3 }}>
+      <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
         <Typography variant="caption" fontWeight={600} textTransform="uppercase" letterSpacing={0.5}>{label}</Typography>
-        <Typography variant="h4" fontFamily="'JetBrains Mono', monospace" mt={0.5} color={color || "text.primary"}>{value}</Typography>
-        {sub && <Typography variant="caption" mt={0.5} display="block">{sub}</Typography>}
+        <Typography variant="h5" fontFamily="'JetBrains Mono', monospace" mt={0.25} color={color || "text.primary"}>{value}</Typography>
+        {sub && <Typography variant="caption" display="block">{sub}</Typography>}
       </CardContent>
     </Card>
   );
@@ -44,11 +47,24 @@ function ChartCard({ title, children }: { title: string; children: React.ReactNo
   );
 }
 
+/** Custom Y-axis tick renderer that truncates + adds MUI tooltip */
+function TruncatedYTick({ x, y, payload, maxLen = 20 }: any) {
+  const full: string = payload.value ?? "";
+  const truncated = full.length > maxLen ? full.slice(0, maxLen) + "…" : full;
+  return (
+    <MuiTooltip title={full} placement="left" arrow>
+      <text x={x} y={y} dy={4} textAnchor="end" fontSize={11} fill="#374151" style={{ cursor: "default" }}>
+        {truncated}
+      </text>
+    </MuiTooltip>
+  );
+}
+
 export function Dashboard() {
   const navigate = useNavigate();
+  const { modelVersion, models } = useModel();
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [dist, setDist] = useState<DistributionBin[]>([]);
-  const [models, setModels] = useState<ModelsResponse | null>(null);
   const [monthData, setMonthData] = useState<MonthStat[]>([]);
   const [regionData, setRegionData] = useState<RegionScoreStat[]>([]);
   const [directionData, setDirectionData] = useState<DirectionScoreStat[]>([]);
@@ -56,31 +72,40 @@ export function Dashboard() {
   const [availableYears, setAvailableYears] = useState<number[]>([]);
   const [selectedYear, setSelectedYear] = useState<number | "">("");
 
-  useEffect(() => {
-    Promise.allSettled([
-      fetchSummary(),
-      fetchDistribution(10),
-      fetchModels(),
-      fetchByMonth(),
-      fetchAvgScoreByRegion(),
-      fetchAvgScoreByDirection(),
-      fetchAvailableYears(),
-    ]).then(([s, d, m, bm, rg, dr, yrs]) => {
-      if (s.status === "fulfilled") setSummary(s.value);
-      if (d.status === "fulfilled") setDist(d.value.bins);
-      if (m.status === "fulfilled") setModels(m.value);
-      if (bm.status === "fulfilled") setMonthData(bm.value.months);
-      if (rg.status === "fulfilled") setRegionData(rg.value.regions);
-      if (dr.status === "fulfilled") setDirectionData(dr.value.directions);
-      if (yrs.status === "fulfilled") setAvailableYears(yrs.value.years);
-      setLoading(false);
-    });
-  }, []);
+  const loadDashboardData = useCallback(async (mv?: string) => {
+    const results = await Promise.allSettled([
+      fetchSummary(mv),
+      fetchDistribution(10, mv),
+      fetchByMonth(selectedYear || undefined, mv),
+      fetchAvgScoreByRegion(undefined, mv),
+      fetchAvgScoreByDirection(undefined, mv),
+    ]);
+    if (results[0].status === "fulfilled") setSummary(results[0].value);
+    else setSummary(null);
+    if (results[1].status === "fulfilled") setDist(results[1].value.bins);
+    else setDist([]);
+    if (results[2].status === "fulfilled") setMonthData(results[2].value.months);
+    else setMonthData([]);
+    if (results[3].status === "fulfilled") setRegionData(results[3].value.regions);
+    else setRegionData([]);
+    if (results[4].status === "fulfilled") setDirectionData(results[4].value.directions);
+    else setDirectionData([]);
+  }, [selectedYear]);
 
-  function handleYearChange(year: number | "") {
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const yearsRes = await fetchAvailableYears().catch(() => ({ years: [] }));
+      setAvailableYears(yearsRes.years);
+      await loadDashboardData(modelVersion || undefined);
+      setLoading(false);
+    })();
+  }, [modelVersion, loadDashboardData]);
+
+  async function handleYearChange(year: number | "") {
     setSelectedYear(year);
     const y = year || undefined;
-    fetchByMonth(y).then((res) => setMonthData(res.months)).catch(() => {});
+    fetchByMonth(y, modelVersion || undefined).then((res) => setMonthData(res.months)).catch(() => {});
   }
 
   if (loading) return (
@@ -94,7 +119,10 @@ export function Dashboard() {
   const medium = summary?.medium ?? 0;
   const low = summary?.low ?? 0;
   const meanScore = summary?.mean_score ?? 0;
-  const activeModel = models?.models?.find((m) => m.is_active);
+  const totalAmount = summary?.total_amount ?? 0;
+  const meanAmount = summary?.mean_amount ?? 0;
+  const confidenceLow = summary?.confidence_low ?? 0;
+  const activeModel = models.find((m) => m.version === modelVersion);
   const hasModel = !!activeModel;
   const hasData = total > 0;
 
@@ -111,18 +139,19 @@ export function Dashboard() {
   });
 
   const regionChartData = regionData.map((r) => ({
-    name: r.region.length > 20 ? r.region.slice(0, 20) + "…" : r.region,
+    name: r.region,
     fullName: r.region,
-    avgScore: r.avg_score,
+    avgScore: Math.round(r.avg_score),
     count: r.count,
   })).slice(0, 15);
 
   const directionChartData = directionData.map((d) => ({
-    name: d.direction.length > 25 ? d.direction.slice(0, 25) + "…" : d.direction,
+    name: d.direction,
     fullName: d.direction,
-    avgScore: d.avg_score,
+    avgScore: Math.round(d.avg_score),
     count: d.count,
   }));
+
 
   return (
     <Box sx={{ p: { xs: 2.5, md: 4 } }}>
@@ -168,24 +197,33 @@ export function Dashboard() {
           </Card>
         )}
 
-        {/* KPIs */}
+        {/* Row 1: KPIs */}
         <Grid container spacing={2}>
-          {[
-            { label: "Всего оценено", value: total.toLocaleString("ru"), sub: "заявок в системе" },
-            { label: "Средний балл AI", value: meanScore ? meanScore.toFixed(1) : "—", sub: "по всем заявкам", color: "#f59e0b" },
-            { label: "Мин / Макс балл", value: `${summary?.min_score ?? "—"} / ${summary?.max_score ?? "—"}`, sub: "диапазон оценок" },
-            { label: "Моделей обучено", value: String(models?.total ?? 0), sub: activeModel ? `Активная: ${activeModel.version}` : "нет активной", color: "#22c55e" },
-          ].map((kpi) => (
-            <Grid size={{ xs: 6, md: 3 }} key={kpi.label}>
-              <KpiCard {...kpi} />
-            </Grid>
-          ))}
+          <Grid size={{ xs: 6, md: 2.4 }}>
+            <KpiCard label="Всего оценено" value={total.toLocaleString("ru")} sub="заявок" />
+          </Grid>
+          <Grid size={{ xs: 6, md: 2.4 }}>
+            <KpiCard label="Средний балл AI" value={meanScore ? String(Math.round(meanScore)) : "—"} sub="по всем заявкам" color="#f59e0b" />
+          </Grid>
+          <Grid size={{ xs: 6, md: 2.4 }}>
+            <KpiCard
+              label="Мин / Макс балл"
+              value={`${summary?.min_score != null ? Math.round(summary.min_score) : "—"} / ${summary?.max_score != null ? Math.round(summary.max_score) : "—"}`}
+              sub="диапазон оценок"
+            />
+          </Grid>
+          <Grid size={{ xs: 6, md: 2.4 }}>
+            <KpiCard label="Общая сумма" value={fmt(totalAmount)} sub="причитающая сумма" color="#3b82f6" />
+          </Grid>
+          <Grid size={{ xs: 6, md: 2.4 }}>
+            <KpiCard label="Средняя сумма" value={fmt(meanAmount)} sub="на заявку" color="#8b5cf6" />
+          </Grid>
         </Grid>
 
-        {/* Status row */}
+        {/* Row 3: Status row */}
         <Grid container spacing={2}>
           {statuses.map(({ icon, label, count, color, bg }) => (
-            <Grid size={{ xs: 12, md: 4 }} key={label}>
+            <Grid size={{ xs: 12, md: confidenceLow > 0 ? 3 : 4 }} key={label}>
               <Card>
                 <CardContent sx={{ p: 2.5, display: "flex", alignItems: "center", gap: 2 }}>
                   <Avatar sx={{ bgcolor: bg, color, width: 40, height: 40 }}>{icon}</Avatar>
@@ -197,9 +235,24 @@ export function Dashboard() {
               </Card>
             </Grid>
           ))}
+          {confidenceLow > 0 && (
+            <Grid size={{ xs: 12, md: 3 }}>
+              <MuiTooltip title="Заявки с данными, не встречавшимися при обучении модели. Их балл может быть неточным — рекомендуется ручная проверка комиссией." arrow>
+                <Card sx={{ border: "1px dashed #f59e0b" }}>
+                  <CardContent sx={{ p: 2.5, display: "flex", alignItems: "center", gap: 2, cursor: "help" }}>
+                    <Avatar sx={{ bgcolor: "#fffbeb", color: "#f59e0b", width: 40, height: 40 }}><Warning /></Avatar>
+                    <Box>
+                      <Typography variant="h6" fontFamily="'JetBrains Mono', monospace" color="#f59e0b">{confidenceLow.toLocaleString("ru")}</Typography>
+                      <Typography variant="caption">Доп. проверка</Typography>
+                    </Box>
+                  </CardContent>
+                </Card>
+              </MuiTooltip>
+            </Grid>
+          )}
         </Grid>
 
-        {/* Applications by month */}
+        {/* Row 4: Applications by month */}
         {monthChartData.length > 0 && (
           <ChartCard title="">
             <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2} mt={-1}>
@@ -218,7 +271,7 @@ export function Dashboard() {
               <BarChart data={monthChartData} margin={{ top: 4, right: 12, left: -12, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} allowDecimals={false} />
                 <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }} formatter={(v: number) => [v.toLocaleString("ru"), "Заявок"]} />
                 <Bar dataKey="count" name="Заявок" radius={[4, 4, 0, 0]} barSize={28} fill="#3b82f6" />
               </BarChart>
@@ -226,7 +279,7 @@ export function Dashboard() {
           </ChartCard>
         )}
 
-        {/* Avg score by region + Avg score by direction */}
+        {/* Row 5: Avg score by region + Avg score by subsidy type */}
         <Grid container spacing={2.5}>
           <Grid size={{ xs: 12, md: 6 }}>
             <ChartCard title="Средний балл по регионам">
@@ -235,14 +288,14 @@ export function Dashboard() {
                   <BarChart data={regionChartData} layout="vertical" margin={{ top: 4, right: 60, left: 4, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                     <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-                    <YAxis type="category" dataKey="name" width={150} tick={{ fontSize: 11, fill: "#374151" }} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" width={150} tick={<TruncatedYTick maxLen={20} />} axisLine={false} tickLine={false} />
                     <Tooltip
                       formatter={(v: number, name: string) => [name === "Ср. балл" ? v : v.toLocaleString("ru"), name]}
                       labelFormatter={(_: string, payload: any[]) => payload?.[0]?.payload?.fullName || _}
                       contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }}
                     />
                     <Bar dataKey="avgScore" name="Ср. балл" radius={[0, 6, 6, 0]} barSize={18}
-                      label={{ position: "right", fontSize: 11, fill: "#6b7280", formatter: (v: number) => v.toFixed(1) }}>
+                      label={{ position: "right", fontSize: 11, fill: "#6b7280", formatter: (v: number) => String(Math.round(v)) }}>
                       {regionChartData.map((r, i) => (
                         <Cell key={i} fill={r.avgScore >= 70 ? "#22c55e" : r.avgScore >= 40 ? "#f59e0b" : "#ef4444"} />
                       ))}
@@ -261,14 +314,14 @@ export function Dashboard() {
                   <BarChart data={directionChartData} layout="vertical" margin={{ top: 4, right: 60, left: 4, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                     <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-                    <YAxis type="category" dataKey="name" width={170} tick={{ fontSize: 11, fill: "#374151" }} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" width={170} tick={<TruncatedYTick maxLen={25} />} axisLine={false} tickLine={false} />
                     <Tooltip
                       formatter={(v: number, name: string) => [name === "Ср. балл" ? v : v.toLocaleString("ru"), name]}
                       labelFormatter={(_: string, payload: any[]) => payload?.[0]?.payload?.fullName || _}
                       contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }}
                     />
                     <Bar dataKey="avgScore" name="Ср. балл" radius={[0, 6, 6, 0]} barSize={18} fill="#3b82f6"
-                      label={{ position: "right", fontSize: 11, fill: "#6b7280", formatter: (v: number) => v.toFixed(1) }}>
+                      label={{ position: "right", fontSize: 11, fill: "#6b7280", formatter: (v: number) => String(Math.round(v)) }}>
                       {directionChartData.map((d, i) => (
                         <Cell key={i} fill={d.avgScore >= 70 ? "#22c55e" : d.avgScore >= 40 ? "#f59e0b" : "#ef4444"} />
                       ))}
@@ -282,7 +335,7 @@ export function Dashboard() {
           </Grid>
         </Grid>
 
-        {/* Score distribution chart */}
+        {/* Row 6: Score distribution chart */}
         <Grid container spacing={2.5}>
           <Grid size={{ xs: 12, md: 8 }}>
             <ChartCard title="Распределение AI-баллов">
@@ -291,7 +344,7 @@ export function Dashboard() {
                   <BarChart data={dist} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                     <XAxis dataKey="range" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} allowDecimals={false} />
                     <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e5e7eb" }} formatter={(v: number) => [v.toLocaleString("ru"), "Заявок"]} />
                     <Bar dataKey="count" radius={[4, 4, 0, 0]} barSize={28}>
                       {dist.map((e, i) => {
@@ -323,45 +376,27 @@ export function Dashboard() {
                       <Typography variant="body2" fontFamily="'JetBrains Mono'" fontWeight={700} color={color}>{count}</Typography>
                     </Box>
                   ))}
+                  {confidenceLow > 0 && (
+                    <>
+                      <Box sx={{ borderTop: "1px dashed #e5e7eb", pt: 1.5 }}>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                          <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "#f59e0b", flexShrink: 0, opacity: 0.5 }} />
+                          <Typography variant="body2" flex={1} color="text.secondary">Низкая уверенность</Typography>
+                          <Typography variant="body2" fontFamily="'JetBrains Mono'" fontWeight={700} color="#f59e0b">{confidenceLow}</Typography>
+                        </Box>
+                      </Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ fontStyle: "italic", mt: 0.5 }}>
+                        Заявки с низкой уверенностью исключены из статистики баллов
+                      </Typography>
+                    </>
+                  )}
                 </Stack>
               </CardContent>
             </Card>
           </Grid>
         </Grid>
 
-        {/* Quick actions */}
-        <Card sx={{ bgcolor: "#f0fdf4", borderColor: "#dcfce7" }}>
-          <CardContent sx={{ p: 3 }}>
-            <Typography variant="subtitle2" mb={2}>Быстрые действия</Typography>
-            <Grid container spacing={1.5}>
-              {[
-                { icon: <ListAlt />, label: "Реестр заявок", sub: "Все оценённые заявки", to: "/registry", color: "#3b82f6" },
-                { icon: <CloudUpload />, label: "Скоринг / Шаблон", sub: "Загрузить файл для оценки", to: "/scoring", color: "#22c55e" },
-                { icon: <Insights />, label: "Исследование модели", sub: "Метрики и факторы", to: "/analytics", color: "#f59e0b" },
-              ].map(({ icon, label, sub, to, color }) => (
-                <Grid size={{ xs: 12, sm: 4 }} key={to}>
-                  <Button
-                    fullWidth variant="outlined" onClick={() => navigate(to)}
-                    sx={{ justifyContent: "flex-start", gap: 1.5, py: 1.5, px: 2, borderRadius: 3, textTransform: "none", color: "text.primary", borderColor: "#e0e0e0", bgcolor: "white", "&:hover": { borderColor: "#22c55e", bgcolor: "white" } }}
-                  >
-                    <Avatar sx={{ bgcolor: `${color}18`, color, width: 36, height: 36 }}>{icon}</Avatar>
-                    <Box textAlign="left">
-                      <Typography variant="body2" fontWeight={600}>{label}</Typography>
-                      <Typography variant="caption">{sub}</Typography>
-                    </Box>
-                  </Button>
-                </Grid>
-              ))}
-            </Grid>
-            <Box sx={{ mt: 2, p: 2, bgcolor: "rgba(255,255,255,0.7)", borderRadius: 2, border: "1px solid #dcfce7", display: "flex", gap: 1, alignItems: "flex-start" }}>
-              <TrendingUp sx={{ fontSize: 14, color: "primary.main", mt: 0.3 }} />
-              <Typography variant="caption" color="text.secondary">
-                AI-модель оценила <b>{total.toLocaleString("ru")} заявок</b>.
-                Итоговое решение остаётся за комиссией — модель только ранжирует и объясняет.
-              </Typography>
-            </Box>
-          </CardContent>
-        </Card>
+
       </Stack>
     </Box>
   );

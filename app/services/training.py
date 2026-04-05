@@ -2,39 +2,19 @@
 TrainingService — оркестрация полного пайплайна обучения.
 
 Поток:
-  DataFrame → Mapper → Cleaner → TargetVariable → FeatureEngineer(fit_transform)
-  → ScoringModel(train) → save model + FE → ModelRepository
+  DataFrame -> Mapper -> Cleaner -> TargetVariable -> FeatureEngineer(fit_transform)
+  -> ScoringModel(train) -> save model + FE -> ModelRepository
 """
 
+import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 import numpy as np
 import pandas as pd
 
 from app.config import MODELS_DIR
-
-
-def _to_native(obj):
-    """Рекурсивно конвертирует numpy типы в Python native для JSON."""
-    if isinstance(obj, dict):
-        return {k: _to_native(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_to_native(v) for v in obj]
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        v = float(obj)
-        return None if np.isnan(v) or np.isinf(v) else v
-    if isinstance(obj, float):
-        return None if np.isnan(obj) or np.isinf(obj) else obj
-    if isinstance(obj, np.ndarray):
-        return _to_native(obj.tolist())
-    if isinstance(obj, (np.bool_,)):
-        return bool(obj)
-    return obj
-
 
 from app.database.repository import ErrorLogRepository
 from app.database.model_repository import ModelRepository
@@ -44,6 +24,28 @@ from app.pipeline.features import FeatureEngineer
 from app.pipeline.model import ScoringModel
 
 logger = logging.getLogger(__name__)
+
+
+def _to_native(obj):
+    """Рекурсивно конвертирует numpy-типы в стандартные Python-типы для JSON-сериализации."""
+    if isinstance(obj, dict):
+        return {k: _to_native(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_native(v) for v in obj]
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        v = float(obj)
+        return None if np.isnan(v) or np.isinf(v) else v
+    if isinstance(obj, float):
+        return None if np.isnan(obj) or np.isinf(obj) else obj
+    if isinstance(obj, np.ndarray):
+        return _to_native(obj.tolist())
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    return obj
+
+
 
 
 class TrainingService:
@@ -61,16 +63,14 @@ class TrainingService:
         df: pd.DataFrame,
         source_name: str,
         source_type: str = "excel",
-        model_version: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Полный цикл обучения.
+        Полный цикл обучения с нуля.
 
         Параметры:
           df            — сырые данные (русские или English колонки)
           source_name   — имя файла (для error_logs)
           source_type   — 'excel' | 'csv' | 'json'
-          model_version — если указан, дообучение существующей модели
 
         Возвращает словарь с метриками, версией, fairness и т.д.
         """
@@ -99,30 +99,37 @@ class TrainingService:
 
         # 4. Обучение модели
         model = ScoringModel()
-        base_model = None
 
-        if model_version:
-            model_info = self.model_repo.get_by_version(model_version)
-            if model_info:
-                old_model = ScoringModel()
-                old_model.load(model_info['file_path'])
-                base_model = old_model.model
-                logger.info(f"Fine-tuning от модели: {model_version}")
-
-        metrics = model.train(enriched, base_model=base_model)
+        metrics = model.train(enriched)
 
         # 5. Скоринг обучающих данных (для fairness)
         scored = model.score(enriched)
+        # model.score() возвращает score=None (AI-балл считается только в ScoringService).
+        # Для fairness-анализа при обучении используем probability × 100 как прокси.
+        scored['score'] = np.clip(np.round(scored['probability'] * 100, 2), 0, 100)
         fairness = model.compute_fairness_report(scored)
 
         # 6. Feature importance
         fi = model.get_feature_importance()
 
         # 7. Сохранение модели на диск
-        version = model_version or f"v_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        model_path = MODELS_DIR / f"{version}.pkl"
+        version = f"v_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        version_dir = MODELS_DIR / version
+        version_dir.mkdir(parents=True, exist_ok=True)
+        model_path = version_dir / "model.pkl"
         model.save(str(model_path), feature_engineer=fe)
+
+        # 7.1 Сохранение отдельных артефактов для деплоя
+        model.save_artifacts(str(version_dir))
+
+        # 7.2 Сохранение маппинга известных категориальных значений
+        known_cats = {
+            col: sorted(list(vals))
+            for col, vals in fe._known_categories.items()
+        }
+        with open(version_dir / "known_categories.json", "w", encoding="utf-8") as f:
+            json.dump(known_cats, f, ensure_ascii=False, indent=2)
+        logger.info(f"Known categories сохранены: {version_dir / 'known_categories.json'}")
 
         # 8. Регистрация в БД
         self.model_repo.create(

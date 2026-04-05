@@ -22,19 +22,27 @@ def _repo():
 @router.get("/errors")
 def get_errors(
     trace_id: Optional[str] = Query(None, description="Фильтр по trace_id загрузки"),
+    error_code: Optional[str] = Query(None, description="Фильтр по коду ошибки"),
+    error_col: Optional[str] = Query(None, description="Фильтр по колонке"),
+    source_name: Optional[str] = Query(None, description="Фильтр по имени источника"),
+    sort_by: str = Query("detected_at", description="id|detected_at"),
+    sort_dir: str = Query("desc", description="asc|desc"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
     """Лог ошибок очистки данных. Каждая запись — невалидная строка из исходного файла."""
     repo = _repo()
-    if trace_id:
-        items = repo.get_by_trace(trace_id, limit=limit, offset=offset)
-    else:
-        items = repo.get_all(limit=limit, offset=offset)
-
-    total = repo.count(trace_id=trace_id or None)
-
-    return {"total": total, "items": items}
+    result = repo.get_filtered(
+        trace_id=trace_id,
+        error_code=error_code,
+        error_col=error_col,
+        source_name=source_name,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        limit=limit,
+        offset=offset,
+    )
+    return result
 
 
 @router.get("/errors/summary")

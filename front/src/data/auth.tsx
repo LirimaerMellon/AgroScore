@@ -58,7 +58,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (DEMO_USERS.some((u) => u.email === email)) {
       return { success: false, error: "Пользователь с таким email уже существует" };
     }
+    const saved = localStorage.getItem("agriscore_registered_users");
+    const existing: User[] = saved ? JSON.parse(saved) : [];
+    if (existing.some((u) => u.email === email)) {
+      return { success: false, error: "Пользователь с таким email уже существует" };
+    }
     const newUser: User = { id: `u${Date.now()}`, name, email, role, organization };
+    existing.push(newUser);
+    localStorage.setItem("agriscore_registered_users", JSON.stringify(existing));
     setUser(newUser);
     localStorage.setItem("agriscore_user", JSON.stringify(newUser));
     return { success: true };

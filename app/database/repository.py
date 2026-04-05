@@ -106,6 +106,55 @@ class ErrorLogRepository:
 
 
     # Read
+    def get_filtered(
+        self,
+        trace_id: Optional[str] = None,
+        error_code: Optional[str] = None,
+        error_col: Optional[str] = None,
+        source_name: Optional[str] = None,
+        sort_by: str = "detected_at",
+        sort_dir: str = "desc",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """Универсальное получение ошибок с фильтрами и сортировкой."""
+        conditions: List[str] = []
+        params: List[Any] = []
+
+        if trace_id:
+            conditions.append("trace_id = ?")
+            params.append(trace_id)
+        if error_code:
+            conditions.append("error_codes LIKE ?")
+            params.append(f"%{error_code}%")
+        if error_col:
+            conditions.append("error_cols LIKE ?")
+            params.append(f"%{error_col}%")
+        if source_name:
+            conditions.append("source_name LIKE ? COLLATE NOCASE")
+            params.append(f"%{source_name}%")
+
+        where = ""
+        if conditions:
+            where = "WHERE " + " AND ".join(conditions)
+
+        allowed_sort = {"id", "detected_at"}
+        sort_col = sort_by if sort_by in allowed_sort else "detected_at"
+        direction = "ASC" if sort_dir.lower() == "asc" else "DESC"
+
+        with self.db.get_connection() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM error_logs {where}", params
+            ).fetchone()["cnt"]
+
+            rows = conn.execute(
+                f"SELECT * FROM error_logs {where} "
+                f"ORDER BY {sort_col} {direction} LIMIT ? OFFSET ?",
+                params + [limit, offset],
+            ).fetchall()
+
+        return {"total": total, "items": [self._row_to_dict(r) for r in rows]}
+
     def get_by_trace(self, trace_id: str, limit: int = 100, offset: int = 0) -> List[Dict]:
         """Ошибки одной загрузки (с пагинацией)."""
         with self.db.get_connection() as conn:

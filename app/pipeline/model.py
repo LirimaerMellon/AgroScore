@@ -4,14 +4,18 @@ ScoringModel — обучение, оценка и сериализация мо
 Ключевые возможности:
 - StratifiedKFold кросс-валидация
 - Нативная поддержка категориальных фичей LightGBM
-- Fine-tuning через init_model (дообучение на новых данных)
 - Сохранение FeatureEngineer вместе с моделью
+- Калибровка через QuantileTransformer → используется ТОЛЬКО внутри
+  CalibratedExplainer (SHAP), НЕ для расчёта AI-балла напрямую
 - Fairness-анализ
+
+AI-балл считается строго из SHAP-значений в ScoringService:
+  AI-балл = clip(round(50 + Σ SHAP), 0, 100)
 """
 
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, QuantileTransformer
 from lightgbm import LGBMClassifier
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import (
@@ -23,8 +27,10 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 import pickle
+import json
 import logging
 from typing import Dict, List, Any, Optional
+from pathlib import Path
 
 from app.config import MODEL_PARAMS
 
@@ -39,8 +45,11 @@ class ScoringModel:
         self.feature_names: List[str] = []
         self.feature_types: Dict[str, str] = {}
         self._categorical_features: List[str] = []
-        self._known_categories: Dict[str, set] = {}   # значения из обучающих данных
-        self._category_modes: Dict[str, int] = {}      # мода (самая частая категория) → encoded
+        self._known_categories: Dict[str, set] = {}
+        self._category_modes: Dict[str, int] = {}
+        # Калибровка
+        self.quantile_transformer: Optional[QuantileTransformer] = None
+        self.X_background: Optional[pd.DataFrame] = None
 
     # ==================================================================
     # FEATURE PREPARATION
@@ -53,6 +62,10 @@ class ScoringModel:
         'index', 'date', 'bin_iin',
         # Дата-фичи исключены: скоринг не должен зависеть от даты
         'days_since_submission', 'month', 'quarter', 'day_of_week', 'day',
+        # region и akimat не используются как фичи — district содержит геоинформацию
+        'region', 'akimat',
+        # unknown_ratio — служебное поле для confidence, НЕ фича модели
+        'unknown_ratio',
     }
 
     def prepare_features(self, df: pd.DataFrame, fit: bool = False) -> pd.DataFrame:
@@ -111,6 +124,57 @@ class ScoringModel:
         return df[self.feature_names]
 
     # ==================================================================
+    # CALIBRATION
+    # ==================================================================
+
+    def fit_calibration(self, X_train: pd.DataFrame) -> None:
+        """
+        Обучить QuantileTransformer на предсказаниях обучающей выборки.
+        После этого calibrated_predict вернёт баллы 0–100, медиана ≈ 50.
+        """
+        probas = self.model.predict_proba(X_train)[:, 1]
+        self.quantile_transformer = QuantileTransformer(
+            output_distribution='uniform',
+            n_quantiles=min(len(probas), 1000),
+            random_state=42,
+        )
+        self.quantile_transformer.fit(probas.reshape(-1, 1))
+
+        # Фон для SHAP explainer (подмножество X_train)
+        n_bg = min(100, len(X_train))
+        self.X_background = X_train.sample(n_bg, random_state=42).copy()
+
+        logger.info(
+            f"Калибровка: QT обучен на {len(probas)} вероятностях, "
+            f"background={n_bg} строк"
+        )
+
+    def calibrated_predict(self, X) -> np.ndarray:
+        """
+        Калиброванное предсказание: возвращает баллы 0–100.
+
+        ⚠ Используется ТОЛЬКО как prediction function для CalibratedExplainer
+        (SHAP). НЕ используется для расчёта AI-балла напрямую.
+        AI-балл = 50 + Σ SHAP (вычисляется в ScoringService).
+        """
+        if isinstance(X, np.ndarray):
+            X = pd.DataFrame(X, columns=self.feature_names)
+
+        probas = self.model.predict_proba(X)[:, 1]
+
+        if self.quantile_transformer is not None:
+            scores = (
+                self.quantile_transformer.transform(probas.reshape(-1, 1))
+                .flatten() * 100
+            )
+            scores = np.clip(scores, 0, 100)
+        else:
+            # Обратная совместимость — без калибровки
+            scores = probas * 100
+
+        return scores
+
+    # ==================================================================
     # TRAINING
     # ==================================================================
 
@@ -118,11 +182,9 @@ class ScoringModel:
         self,
         df: pd.DataFrame,
         n_splits: int = 5,
-        base_model: Optional[LGBMClassifier] = None,
     ) -> Dict[str, Any]:
         """
-        Обучение модели.
-        base_model — если передан, используется как init_model (fine-tuning).
+        Обучение модели с нуля.
         """
         logger.info("=" * 50)
         logger.info("ОБУЧЕНИЕ МОДЕЛИ")
@@ -144,11 +206,11 @@ class ScoringModel:
         # --- Final model on all data ---
         logger.info("Обучение финальной модели на всех данных...")
         fit_kwargs = {'categorical_feature': self._categorical_features}
-        if base_model is not None:
-            fit_kwargs['init_model'] = base_model
-            logger.info("Fine-tuning: используется базовая модель как init_model")
 
         self.model.fit(X, y, **fit_kwargs)
+
+        # Калибровка (QuantileTransformer)
+        self.fit_calibration(X)
 
         # --- Aggregate metrics ---
         agg = self._aggregate_cv_metrics(cv_metrics)
@@ -173,65 +235,56 @@ class ScoringModel:
     # SCORING
     # ==================================================================
 
-    def score(self, df: pd.DataFrame) -> pd.DataFrame:
+    def score(self, df: pd.DataFrame, bins=None, labels=None) -> pd.DataFrame:
         """
-        Enterprise-скоринг с учётом качества данных.
+        Подготовка метаданных для скоринга.
 
-        Философия:
-        - Модель даёт лучшую оценку на основе доступных данных
-        - Неизвестные поля → мягкий дисконт + прозрачный индикатор качества
-        - Заявки с низким качеством данных → review_required (рекомендация комиссии)
-        - Новый фермер из нового региона НЕ карается автоматически
+        ⚠ Этот метод НЕ вычисляет AI-балл и НЕ определяет категорию.
+        Поля score и category возвращаются как None.
+        Единственный источник правды для AI-балла — ScoringService:
+          AI-балл = clip(round(50 + Σ SHAP), 0, 100)
+
+        Здесь:
+        - probability     — сырая вероятность predict_proba (для внутренних нужд)
+        - score           — None (вычисляется только в ScoringService из SHAP)
+        - category        — None (вычисляется только в ScoringService из SHAP)
+        - confidence      — уровень доверия к данным (метаданные, НЕ влияет на балл)
+        - review_required — флаг «рекомендуется проверка» (confidence ниже порога)
+        - data_quality    — полнота данных (complete / high / medium / low)
+
+        bins/labels — не используются (оставлены для обратной совместимости сигнатуры).
         """
         df = df.copy()
         X = self.prepare_features(df, fit=False)
 
+        # Вероятность (сырая) — для внутренних нужд и training fairness
         probabilities = self.model.predict_proba(X)[:, 1]
 
-        # --- Уровень доверия к данным ---
+        # Метаданные: уровень доверия к данным
         if 'unknown_ratio' in df.columns:
             unknown_ratio = df['unknown_ratio'].values
         else:
             unknown_ratio = np.zeros(len(df))
 
-        # Мягкий линейный дисконт: ~10% за каждое неизвестное поле из 5.
-        # Новый фермер с 1 неизвестным полем теряет всего 10% — это справедливо.
-        # Полный мусор (5/5) теряет 50% — всё ещё получает оценку, но со скидкой.
-        # Комиссия видит data_quality и review_required для принятия решения.
-        #
-        # ratio=0.0 → confidence=1.00  (данные полные)
-        # ratio=0.2 → confidence=0.90  (1 поле — минимальная скидка)
-        # ratio=0.4 → confidence=0.80  (2 поля — умеренная скидка)
-        # ratio=0.6 → confidence=0.70  (3 поля — заметная скидка)
-        # ratio=1.0 → confidence=0.50  (все поля неизвестны)
         confidence = np.clip(1.0 - unknown_ratio * 0.5, 0.5, 1.0)
-
-        adjusted_proba = probabilities * confidence
-        scores = np.round(adjusted_proba * 100, 2)
-
-        # --- Индикаторы качества данных (НЕ влияют на score) ---
-        # review_required: рекомендация ручной проверки при 2+ неизвестных полях
         review_required = unknown_ratio >= 0.4
-
-        # data_quality: прозрачный уровень полноты данных
         data_quality = np.where(
             unknown_ratio == 0, 'complete',
             np.where(unknown_ratio <= 0.2, 'high',
                      np.where(unknown_ratio <= 0.4, 'medium', 'low'))
         )
 
-        df['score'] = scores
-        df['probability'] = adjusted_proba
+        # ⚠ score и category = None.
+        # AI-балл считается ТОЛЬКО в ScoringService из SHAP-значений.
+        # Если кто-то попытается использовать score отсюда — получит ошибку,
+        # что является правильным поведением.
+        df['score'] = None
+        df['probability'] = probabilities
         df['raw_probability'] = probabilities
         df['confidence'] = np.round(confidence, 4)
         df['review_required'] = review_required
         df['data_quality'] = data_quality
-        df['category'] = pd.cut(
-            scores,
-            bins=[0, 40, 70, 100],
-            labels=['LOW', 'MEDIUM', 'HIGH'],
-            include_lowest=True,
-        )
+        df['category'] = None
         return df
 
     # ==================================================================
@@ -243,7 +296,7 @@ class ScoringModel:
             return {}
 
         report: Dict[str, Any] = {}
-        for col in ['region', 'subsidy_type', 'direction']:
+        for col in ['district', 'subsidy_type', 'direction']:
             if col not in df.columns:
                 continue
             stats = (
@@ -272,11 +325,11 @@ class ScoringModel:
         return df.sort_values('importance', ascending=False).reset_index(drop=True)
 
     # ==================================================================
-    # PERSISTENCE — сохранение/загрузка с FeatureEngineer
+    # PERSISTENCE
     # ==================================================================
 
     def save(self, path: str, feature_engineer=None):
-        """Сохраняет модель + label encoders + FeatureEngineer."""
+        """Сохраняет модель + калибровку + label encoders + FeatureEngineer."""
         data = {
             'model': self.model,
             'label_encoders': self.label_encoders,
@@ -286,10 +339,33 @@ class ScoringModel:
             'known_categories': self._known_categories,
             'category_modes': self._category_modes,
             'feature_engineer': feature_engineer,
+            'quantile_transformer': self.quantile_transformer,
+            'X_background': self.X_background,
         }
         with open(path, 'wb') as f:
             pickle.dump(data, f)
         logger.info(f"Модель сохранена: {path}")
+
+    def save_artifacts(self, directory: str):
+        """
+        Сохраняет отдельные артефакты для деплоя:
+        quantile_transformer.pkl, X_train_background.pkl, feature_names.json
+        """
+        d = Path(directory)
+        d.mkdir(parents=True, exist_ok=True)
+
+        if self.quantile_transformer is not None:
+            with open(d / "quantile_transformer.pkl", "wb") as f:
+                pickle.dump(self.quantile_transformer, f)
+
+        if self.X_background is not None:
+            with open(d / "X_train_background.pkl", "wb") as f:
+                pickle.dump(self.X_background, f)
+
+        with open(d / "feature_names.json", "w", encoding="utf-8") as f:
+            json.dump(self.feature_names, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"Артефакты сохранены: {d}")
 
     def load(self, path: str):
         """
@@ -305,9 +381,15 @@ class ScoringModel:
         self._categorical_features = data.get('categorical_features', [])
         self._known_categories = data.get('known_categories', {})
         self._category_modes = data.get('category_modes', {})
+        self.quantile_transformer = data.get('quantile_transformer')
+        self.X_background = data.get('X_background')
 
         fe = data.get('feature_engineer')
         logger.info(f"Модель загружена: {path}")
+        if self.quantile_transformer is not None:
+            logger.info("  QuantileTransformer: загружен")
+        if self.X_background is not None:
+            logger.info(f"  X_background: {len(self.X_background)} строк")
         return fe
 
     # ==================================================================

@@ -25,7 +25,6 @@ class Database:
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # Connection
     @contextmanager
     def get_connection(self):
         """
@@ -45,7 +44,6 @@ class Database:
         finally:
             conn.close()
 
-    # Schema
     def init_schema(self):
         """
         Создаёт таблицы и индексы.
@@ -134,8 +132,19 @@ class Database:
                 conn.execute("ALTER TABLE applications ADD COLUMN data_quality TEXT DEFAULT 'complete'")
             except Exception:
                 pass
+            try:
+                conn.execute("ALTER TABLE applications ADD COLUMN confidence_level TEXT DEFAULT 'HIGH'")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE applications ADD COLUMN unknown_fields TEXT DEFAULT '[]'")
+            except Exception:
+                pass
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_app_score ON applications(score)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_app_confidence ON applications(confidence_level)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_app_category ON applications(category)"
@@ -146,5 +155,60 @@ class Database:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_app_model ON applications(model_version)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_app_status ON applications(status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_app_direction ON applications(direction)"
+            )
+
+            # --- shap_results ---
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS shap_results (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    object_id       INTEGER NOT NULL,
+                    model_version   TEXT    NOT NULL,
+                    score           INTEGER NOT NULL,
+                    base_value      INTEGER NOT NULL,
+                    shap_values     TEXT    NOT NULL DEFAULT '[]',
+                    created_at      TEXT    NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_shap_obj_model "
+                "ON shap_results(object_id, model_version)"
+            )
+
+            # --- score_thresholds ---
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS score_thresholds (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_version   TEXT    NOT NULL,
+                    category        TEXT    NOT NULL,
+                    min_score       REAL    NOT NULL,
+                    max_score       REAL    NOT NULL,
+                    updated_by      TEXT,
+                    updated_at      TEXT,
+                    UNIQUE(model_version, category)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_thresholds_mv "
+                "ON score_thresholds(model_version)"
+            )
+
+            # --- round_settings ---
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS round_settings (
+                    id          INTEGER PRIMARY KEY CHECK (id = 1),
+                    budget      REAL    NOT NULL DEFAULT 0,
+                    updated_by  TEXT,
+                    updated_at  TEXT
+                )
+            """)
 
         logger.info(f"SQLite схема инициализирована: {self.db_path}")
+
+        # Инициализация дефолтных порогов
+        from app.database.threshold_repository import ThresholdRepository
+        ThresholdRepository(self).init_defaults()

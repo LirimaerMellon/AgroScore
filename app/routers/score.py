@@ -9,7 +9,7 @@ import logging
 import io
 import pandas as pd
 
-from app.database import ErrorLogRepository, ModelRepository, ApplicationRepository
+from app.database import ErrorLogRepository, ModelRepository, ApplicationRepository, ShapRepository, ThresholdRepository
 from app.services.scoring import ScoringService
 from app.pipeline.loader import DataLoader
 from app.schemas import ScoreJsonRequest
@@ -25,6 +25,8 @@ def _get_service():
         error_repo=ErrorLogRepository(db),
         model_repo=ModelRepository(db),
         app_repo=ApplicationRepository(db),
+        shap_repo=ShapRepository(db),
+        threshold_repo=ThresholdRepository(db),
     )
 
 

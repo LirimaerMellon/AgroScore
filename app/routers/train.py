@@ -3,8 +3,7 @@ POST /api/train        — загрузка файла (Excel/CSV) и обуче
 POST /api/train/json   — обучение из JSON body
 """
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from typing import Optional
+from fastapi import APIRouter, UploadFile, File, HTTPException
 import logging
 import io
 import pandas as pd
@@ -30,7 +29,6 @@ def _get_service():
 @router.post("/train")
 def train_model(
     file: UploadFile = File(...),
-    model_version: Optional[str] = Form(None),
 ):
     """Обучение модели из Excel/CSV файла."""
     allowed = (".xlsx", ".xls", ".csv")
@@ -47,7 +45,7 @@ def train_model(
 
         result = _get_service().train(
             df=df, source_name=file.filename,
-            source_type=source_type, model_version=model_version,
+            source_type=source_type,
         )
         return result
 
@@ -67,7 +65,7 @@ def train_model_json(request: TrainJsonRequest):
 
         result = _get_service().train(
             df=df, source_name="json_upload",
-            source_type="json", model_version=request.model_version,
+            source_type="json",
         )
         return result
 

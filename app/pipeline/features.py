@@ -1,38 +1,45 @@
 """
 FeatureEngineer — конструирование признаков для скоринга.
 
+Ровно 10 признаков:
+  Сырые (5):  amount, normative, district, subsidy_type, direction
+  Производные (5):
+    amount_to_normative        — amount / normative
+    approval_rate_district     — ист. % одобрений по району
+    approval_rate_subsidy_type — ист. % одобрений по виду субсидии
+    amount_rank_in_subsidy_type — ранг суммы внутри вида субсидии (0–1)
+    log_amount                 — ln(amount)
+
 Архитектура fit / transform:
   - fit(df)           — вычисляет статистики из обучающих данных
   - transform(df)     — применяет сохранённые статистики к новым данным
   - fit_transform(df) — обучение + трансформация одним вызовом
 
-Состояние (approval_rates, aggregates, group_stats, medians)
+Состояние (approval_rates, medians, known_categories)
 сохраняется вместе с моделью для использования при inference.
 
-ВАЖНО: Временные признаки (дата, месяц, день) НЕ используются.
-Скоринг основан только на атрибутах заявки и исторических паттернах.
+ВАЖНО: region и akimat НЕ используются как фичи.
+        district уже содержит географическую информацию.
 """
 
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, Optional, Set
+from typing import Dict, Set
 
 logger = logging.getLogger(__name__)
 
 
 class FeatureEngineer:
 
-    GROUP_COLUMNS = ['region', 'subsidy_type', 'direction', 'district', 'akimat']
+    # Только 3 категориальных поля — они же фичи модели
+    CATEGORICAL_FEATURES = ['district', 'subsidy_type', 'direction']
     SMOOTHING_WEIGHT = 10
 
     def __init__(self):
         self.approval_rates: Dict[str, pd.Series] = {}
-        self.aggregates: Dict[str, pd.DataFrame] = {}
         self._global_approval_rate: float = 0.0
         self._fill_medians: Dict[str, float] = {}
-        self._fill_q25: Dict[str, float] = {}          # 25-й перцентиль для пессимистичного заполнения
-        self._group_amount_stats: Dict[str, Dict] = {}
         self._known_categories: Dict[str, Set[str]] = {}
         self._fitted = False
 
@@ -44,8 +51,6 @@ class FeatureEngineer:
         """Вычислить и сохранить статистики из обучающих данных."""
         logger.info("FeatureEngineer: fit...")
         self._calculate_approval_rates(df)
-        self._calculate_financial_aggregates(df)
-        self._calculate_group_stats(df)
         self._save_known_categories(df)
         self._fitted = True
         logger.info("FeatureEngineer: fit завершён")
@@ -62,29 +67,20 @@ class FeatureEngineer:
         # 1. Approval rates (из saved state)
         df = self._add_approval_rate_features(df)
 
-        # 2. Финансовые агрегаты (из saved state)
-        df = self._add_aggregate_features(df)
-
-        # 3. Соотношения
+        # 2. Соотношение amount / normative
         df = self._add_ratio_features(df)
 
-        # 4. Логарифмы
+        # 3. Логарифм
         df = self._add_log_features(df)
 
-        # 5. Ранги
+        # 4. Ранг суммы внутри вида субсидии
         df = self._add_rank_features(df)
 
-        # 6. Z-score отклонения
-        df = self._add_deviation_features(df, is_training)
-
-        # 7. Комбинированные категориальные
-        df = self._add_interaction_features(df)
-
-        # 8. Доля неизвестных категориальных значений (штраф за мусор)
+        # 5. Доля неизвестных категориальных полей (для confidence/review)
         if not is_training:
             df = self._add_unknown_ratio_feature(df)
 
-        # 9. Заполнение пропусков
+        # 6. Заполнение пропусков
         df = self._fill_missing(df, is_training)
 
         logger.info(f"FeatureEngineer: transform завершён. Колонок: {len(df.columns)}")
@@ -107,7 +103,7 @@ class FeatureEngineer:
         self._global_approval_rate = float(df['is_approved'].mean())
         m = self.SMOOTHING_WEIGHT
 
-        for col in self.GROUP_COLUMNS:
+        for col in ['district', 'subsidy_type']:
             if col not in df.columns:
                 continue
             grouped = df.groupby(col)['is_approved']
@@ -116,53 +112,16 @@ class FeatureEngineer:
             smoothed = (count * mean + m * self._global_approval_rate) / (count + m)
             self.approval_rates[f'by_{col}'] = smoothed.astype(float)
 
-        logger.info("Approval rates рассчитаны")
-
-    def _calculate_financial_aggregates(self, df: pd.DataFrame) -> None:
-        if 'amount' not in df.columns:
-            return
-
-        has_normative = 'normative' in df.columns
-
-        for col in self.GROUP_COLUMNS:
-            if col not in df.columns:
-                continue
-
-            agg_dict = {'amount': ['sum', 'mean', 'median', 'std', 'count']}
-            if has_normative:
-                agg_dict['normative'] = ['mean']
-
-            agg = df.groupby(col).agg(agg_dict).round(2)
-
-            new_cols = []
-            for top, sub in agg.columns:
-                if sub == 'count':
-                    new_cols.append(f'count_{col}')
-                else:
-                    new_cols.append(f'{sub}_{top}_{col}')
-            agg.columns = new_cols
-
-            std_col = f'std_amount_{col}'
-            if std_col in agg.columns:
-                agg[std_col] = agg[std_col].fillna(0)
-
-            self.aggregates[f'by_{col}'] = agg
-
-        logger.info("Финансовые агрегаты рассчитаны")
-
-    def _calculate_group_stats(self, df: pd.DataFrame) -> None:
-        """Средние и std по группам — для z-score при inference."""
-        if 'amount' not in df.columns:
-            return
-        for col in self.GROUP_COLUMNS:
-            if col not in df.columns:
-                continue
-            stats = df.groupby(col)['amount'].agg(['mean', 'std']).fillna(0)
-            self._group_amount_stats[col] = stats.to_dict('index')
+        logger.info(
+            f"Approval rates рассчитаны: "
+            f"global={self._global_approval_rate:.3f}, "
+            f"by_district={len(self.approval_rates.get('by_district', []))} значений, "
+            f"by_subsidy_type={len(self.approval_rates.get('by_subsidy_type', []))} значений"
+        )
 
     def _save_known_categories(self, df: pd.DataFrame) -> None:
         """Сохранить все известные значения категориальных признаков из обучающих данных."""
-        for col in self.GROUP_COLUMNS:
+        for col in self.CATEGORICAL_FEATURES:
             if col in df.columns:
                 unique_vals = set(df[col].dropna().astype(str).str.strip().unique())
                 self._known_categories[col] = unique_vals
@@ -173,97 +132,42 @@ class FeatureEngineer:
     # ==========================================================
 
     def _add_approval_rate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        # Для неизвестных категорий — нейтральный prior:
-        # глобальный средний × 0.8 (20% «скидка за новизну»).
-        # Это справедливо: новый фермер не наказывается, но и не получает
-        # бонуса от лучших регионов. Лёгкий дисконт за отсутствие истории.
-        novelty_prior = self._global_approval_rate * 0.8
+        """Добавляет approval_rate_district и approval_rate_subsidy_type.
 
-        for col in self.GROUP_COLUMNS:
+        Для неизвестных значений при inference — глобальный средний approval_rate.
+        """
+        for col in ['district', 'subsidy_type']:
             key = f'by_{col}'
             if col in df.columns and key in self.approval_rates:
                 df[f'approval_rate_{col}'] = df[col].map(self.approval_rates[key])
                 df[f'approval_rate_{col}'] = df[f'approval_rate_{col}'].fillna(
-                    novelty_prior
+                    self._global_approval_rate
                 )
-        return df
-
-    def _add_aggregate_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        for group_key, agg_df in self.aggregates.items():
-            group_col = group_key.replace('by_', '')
-            if group_col not in df.columns:
-                continue
-            for feat_col in agg_df.columns:
-                df[feat_col] = df[group_col].map(agg_df[feat_col])
         return df
 
     def _add_ratio_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """amount_to_normative = amount / normative. NaN если normative == 0 или None."""
         if 'amount' in df.columns and 'normative' in df.columns:
             safe_normative = df['normative'].replace(0, np.nan)
-            df['amount_to_normative'] = (df['amount'] / safe_normative).fillna(0)
+            df['amount_to_normative'] = df['amount'] / safe_normative
         return df
 
     def _add_log_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """log_amount = ln(amount). NaN если amount <= 0."""
         if 'amount' in df.columns:
-            df['log_amount'] = np.log1p(df['amount'])
-        if 'normative' in df.columns:
-            df['log_normative'] = np.log1p(df['normative'])
+            df['log_amount'] = df['amount'].apply(
+                lambda x: np.log(x) if (pd.notna(x) and x > 0) else np.nan
+            )
         return df
 
     def _add_rank_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        if 'amount' not in df.columns:
+        """amount_rank_in_subsidy_type — ранг суммы внутри вида субсидии (0–1)."""
+        if 'amount' not in df.columns or 'subsidy_type' not in df.columns:
             return df
-        for col in ['region', 'subsidy_type', 'direction']:
-            if col not in df.columns:
-                continue
-            df[f'amount_rank_in_{col}'] = (
-                df.groupby(col)['amount'].rank(pct=True, method='average')
-            )
-            df[f'amount_rank_in_{col}'] = df[f'amount_rank_in_{col}'].fillna(0.5)
-        return df
-
-    def _add_deviation_features(
-        self, df: pd.DataFrame, is_training: bool
-    ) -> pd.DataFrame:
-        """Z-score отклонения суммы от средней по группе."""
-        if 'amount' not in df.columns:
-            return df
-
-        for col in ['region', 'subsidy_type']:
-            if col not in df.columns:
-                continue
-
-            if is_training:
-                group_mean = df.groupby(col)['amount'].transform('mean')
-                group_std = df.groupby(col)['amount'].transform('std').replace(0, np.nan)
-                df[f'amount_zscore_{col}'] = (
-                    (df['amount'] - group_mean) / group_std
-                ).fillna(0)
-            else:
-                # Inference — используем сохранённые статистики
-                if col in self._group_amount_stats:
-                    stats = self._group_amount_stats[col]
-                    means = df[col].map(
-                        {k: v['mean'] for k, v in stats.items()}
-                    )
-                    stds = df[col].map(
-                        {k: v['std'] for k, v in stats.items()}
-                    ).replace(0, np.nan)
-                    df[f'amount_zscore_{col}'] = (
-                        (df['amount'] - means) / stds
-                    ).fillna(0)
-                else:
-                    df[f'amount_zscore_{col}'] = 0
-
-        return df
-
-    def _add_interaction_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        pairs = [('region', 'direction'), ('region', 'subsidy_type')]
-        for col_a, col_b in pairs:
-            if col_a in df.columns and col_b in df.columns:
-                df[f'{col_a}_x_{col_b}'] = (
-                    df[col_a].astype(str) + '_' + df[col_b].astype(str)
-                )
+        df['amount_rank_in_subsidy_type'] = (
+            df.groupby('subsidy_type')['amount'].rank(pct=True, method='average')
+        )
+        df['amount_rank_in_subsidy_type'] = df['amount_rank_in_subsidy_type'].fillna(0.5)
         return df
 
     def _add_unknown_ratio_feature(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -274,12 +178,13 @@ class FeatureEngineer:
         """
         known_cats = getattr(self, '_known_categories', {})
         if not known_cats:
+            df['unknown_ratio'] = 0.0
             return df
 
         checked = 0
         unknown_count = pd.Series(0, index=df.index, dtype=float)
 
-        for col in self.GROUP_COLUMNS:
+        for col in self.CATEGORICAL_FEATURES:
             if col in df.columns and col in known_cats:
                 checked += 1
                 known_set = known_cats[col]
@@ -303,15 +208,8 @@ class FeatureEngineer:
                     self._fill_medians[col] = (
                         float(median_val) if not pd.isna(median_val) else 0.0
                     )
-                    q25_val = df[col].quantile(0.25)
-                    self._fill_q25[col] = (
-                        float(q25_val) if not pd.isna(q25_val) else 0.0
-                    )
                     df[col] = df[col].fillna(self._fill_medians[col])
         else:
-            # Enterprise-подход: заполняем медианой (нейтральная оценка).
-            # Неизвестная группа → «средний» уровень агрегатов, не плохой и не хороший.
-            # Дисконт за неизвестность уже учтён в confidence penalty.
             for col in numeric_cols:
                 if col == 'unknown_ratio':
                     continue
@@ -329,16 +227,23 @@ class FeatureEngineer:
         """
         Для каждой строки возвращает список неизвестных полей.
         Используется ScoringService для предупреждений.
+        Векторизованная реализация — isin() по колонкам вместо iterrows().
         """
         known_cats = getattr(self, '_known_categories', {})
+        if not known_cats:
+            return [[] for _ in range(len(df))]
+
+        # Предвычисляем булевы маски для каждой категориальной колонки
+        unknown_masks = {}
+        for col in self.CATEGORICAL_FEATURES:
+            if col in df.columns and col in known_cats:
+                known_set = known_cats[col]
+                unknown_masks[col] = ~df[col].astype(str).str.strip().isin(known_set)
+
+        # Собираем результат из масок
         result = []
-        for idx, row in df.iterrows():
-            unknowns = []
-            for col in self.GROUP_COLUMNS:
-                if col in df.columns and col in known_cats:
-                    val = str(row[col]).strip()
-                    if val not in known_cats[col]:
-                        unknowns.append(col)
+        for i in range(len(df)):
+            unknowns = [col for col, mask in unknown_masks.items() if mask.iloc[i]]
             result.append(unknowns)
         return result
 

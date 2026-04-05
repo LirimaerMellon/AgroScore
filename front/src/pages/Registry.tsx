@@ -9,6 +9,7 @@ import {
 import { Search, FilterList, SearchOff, Download, Warning } from "@mui/icons-material";
 import { fetchApplications, downloadExport, type ApplicationItem } from "../data/api";
 import { ScoreBadge } from "../components/ScoreBadge";
+import { useModel } from "../data/ModelContext";
 
 const CATEGORY_CHIP: Record<string, { color: "success" | "warning" | "error"; label: string }> = {
   HIGH: { color: "success", label: "HIGH" },
@@ -23,6 +24,7 @@ type SortDir = "asc" | "desc";
 
 export function Registry() {
   const navigate = useNavigate();
+  const { modelVersion } = useModel();
   const [items, setItems] = useState<ApplicationItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -44,6 +46,7 @@ export function Registry() {
         offset: page * rowsPerPage,
         search: searchText || undefined,
         category: filterCategory || undefined,
+        model_version: modelVersion || undefined,
         sort_by: sortKey,
         sort_dir: sortDir,
         review_required: filterReviewRequired || undefined,
@@ -52,9 +55,12 @@ export function Registry() {
       setTotal(res.total);
     } catch { /* empty — graceful */ }
     setLoading(false);
-  }, [page, rowsPerPage, searchText, filterCategory, filterReviewRequired, sortKey, sortDir]);
+  }, [page, rowsPerPage, searchText, filterCategory, filterReviewRequired, sortKey, sortDir, modelVersion]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Сброс страницы при смене модели
+  useEffect(() => { setPage(0); }, [modelVersion]);
 
   function handleSearchChange(value: string) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -86,7 +92,7 @@ export function Registry() {
           >
             Фильтры
           </Button>
-          <Button variant="outlined" startIcon={<Download />} size="small" onClick={() => downloadExport()}>
+          <Button variant="outlined" startIcon={<Download />} size="small" onClick={() => downloadExport(modelVersion || undefined)}>
             Экспорт Excel
           </Button>
         </Stack>
@@ -134,7 +140,7 @@ export function Registry() {
                   label={
                     <Stack direction="row" spacing={0.5} alignItems="center">
                       <Warning sx={{ fontSize: 16, color: filterReviewRequired ? "#f59e0b" : "#9ca3af" }} />
-                      <Typography variant="body2">Рекомендуется доп. проверка</Typography>
+                      <Typography variant="body2">Только доп. проверка</Typography>
                     </Stack>
                   }
                 />
@@ -158,6 +164,7 @@ export function Registry() {
                       <TableSortLabel active={sortKey === "score"} direction={sortDir} onClick={() => toggleSort("score")}>Балл</TableSortLabel>
                     </TableCell>
                     <TableCell>Категория</TableCell>
+                    <TableCell>БИН/ИИН</TableCell>
                     <TableCell>Область</TableCell>
                     <TableCell>Направление</TableCell>
                     <TableCell>Вид субсидии</TableCell>
@@ -167,7 +174,7 @@ export function Registry() {
                     <TableCell align="right" sortDirection={sortKey === "amount" ? sortDir : false}>
                       <TableSortLabel active={sortKey === "amount"} direction={sortDir} onClick={() => toggleSort("amount")}>Причитающая сумма</TableSortLabel>
                     </TableCell>
-                    <TableCell width={60}>Проверка</TableCell>
+                    <TableCell>Район хозяйства</TableCell>
                     <TableCell width={90} sortDirection={sortKey === "created_at" ? sortDir : false}>
                       <TableSortLabel active={sortKey === "created_at"} direction={sortDir} onClick={() => toggleSort("created_at")}>Дата</TableSortLabel>
                     </TableCell>
@@ -177,12 +184,24 @@ export function Registry() {
                   {items.map((app, i) => {
                     const cat = CATEGORY_CHIP[app.category] ?? { color: "default" as const, label: app.category };
                     const date = app.created_at ? new Date(app.created_at).toLocaleDateString("ru", { day: "2-digit", month: "2-digit", year: "2-digit" }) : "—";
-                    const reviewRequired = (app as any).review_required;
                     return (
                       <TableRow key={app.id} hover sx={{ cursor: "pointer" }} onClick={() => navigate(`/app/${app.id}`)}>
                         <TableCell sx={{ color: "text.secondary", fontFamily: "'JetBrains Mono'" }}>{page * rowsPerPage + i + 1}</TableCell>
                         <TableCell><ScoreBadge score={Math.round(app.score)} /></TableCell>
-                        <TableCell><Chip label={cat.label} color={cat.color} size="small" variant="outlined" /></TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={0.5} alignItems="center">
+                            <Chip
+                              label={cat.label}
+                              color={cat.color}
+                              size="small"
+                              variant="outlined"
+                            />
+                            {app.review_required && (
+                              <Warning sx={{ fontSize: 16, color: "#f59e0b" }} titleAccess="Доп. проверка" />
+                            )}
+                          </Stack>
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: "'JetBrains Mono'", fontSize: "0.8rem", color: "text.secondary" }}>{app.bin_iin || "—"}</TableCell>
                         <TableCell sx={{ fontWeight: 500 }}>{app.region || "—"}</TableCell>
                         <TableCell sx={{ color: "text.secondary" }}>{app.direction || "—"}</TableCell>
                         <TableCell sx={{ color: "text.secondary", maxWidth: 220 }}>
@@ -190,9 +209,7 @@ export function Registry() {
                         </TableCell>
                         <TableCell align="right" sx={{ fontFamily: "'JetBrains Mono'", fontWeight: 600 }}>{fmt(app.normative ?? 0)}</TableCell>
                         <TableCell align="right" sx={{ fontFamily: "'JetBrains Mono'", fontWeight: 600 }}>{fmt(app.amount)}</TableCell>
-                        <TableCell>
-                          {reviewRequired && <Warning sx={{ fontSize: 16, color: "#f59e0b" }} titleAccess="Рекомендуется доп. проверка" />}
-                        </TableCell>
+                        <TableCell sx={{ color: "text.secondary" }}>{app.district || "—"}</TableCell>
                         <TableCell sx={{ fontFamily: "'JetBrains Mono'", color: "text.secondary" }}>{date}</TableCell>
                       </TableRow>
                     );

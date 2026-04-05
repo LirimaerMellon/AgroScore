@@ -50,7 +50,6 @@ class TrainJsonRecord(BaseModel):
 
 class TrainJsonRequest(BaseModel):
     records: List[TrainJsonRecord]
-    model_version: Optional[str] = None
 
 
 # =========================
@@ -201,3 +200,67 @@ class TraceListItem(BaseModel):
 
 class TraceListResponse(BaseModel):
     traces: List[TraceListItem]
+
+
+# =========================
+# SHAP
+# =========================
+
+class ShapFactorItem(BaseModel):
+    feature: str
+    shap_points: int
+    direction: str
+
+
+class ShapRestItem(BaseModel):
+    count: int
+    shap_points: int
+    factors: Optional[List[ShapFactorItem]] = None
+
+
+class ShapResponse(BaseModel):
+    score: int
+    base_value: int
+    category: str
+    model_version: str
+    rank: Optional[int] = None
+    fits_budget: Optional[bool] = None
+    summary: str
+    factors: List[ShapFactorItem]
+    rest: ShapRestItem
+
+
+# =========================
+# THRESHOLDS
+# =========================
+
+class ThresholdItem(BaseModel):
+    category: str
+    min_score: float
+    max_score: float
+
+
+class ThresholdUpdateRequest(BaseModel):
+    thresholds: List[ThresholdItem]
+    model_version: Optional[str] = "_default"
+    updated_by: Optional[str] = "admin"
+
+
+class ThresholdPreviewRequest(BaseModel):
+    thresholds: List[ThresholdItem]
+
+
+class ThresholdPreviewResponse(BaseModel):
+    counts: Dict[str, int]
+
+
+class RoundBudgetResponse(BaseModel):
+    budget: float
+    updated_by: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class RoundBudgetUpdateRequest(BaseModel):
+    budget: float
+    updated_by: Optional[str] = "admin"
+

@@ -11,7 +11,8 @@ import {
   CheckCircle, SwapHoriz, AccountBalance,
 } from "@mui/icons-material";
 import { useAuth, ROLE_LABELS, ROLE_NAV_ACCESS } from "../data/auth";
-import { fetchHealth, fetchModels, activateModel, type ModelInfo } from "../data/api";
+import { useModel } from "../data/ModelContext";
+import { type ModelInfo } from "../data/api";
 
 const DRAWER_WIDTH = 240;
 
@@ -34,17 +35,16 @@ const ROLE_COLORS: Record<string, string> = {
 
 export function Layout() {
   const { user, logout } = useAuth();
+  const { modelVersion: activeModel, models: allModels, switchModel, refreshModels } = useModel();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const [mobileOpen, setMobileOpen] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
-  const [activeModel, setActiveModel] = useState<string | null>(null);
 
   // Model selector state
   const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
-  const [allModels, setAllModels] = useState<ModelInfo[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [switching, setSwitching] = useState(false);
 
@@ -53,22 +53,11 @@ export function Layout() {
   const [snackMessage, setSnackMessage] = useState("");
   const [snackSeverity, setSnackSeverity] = useState<"success" | "error">("success");
 
-  const refreshActiveModel = useCallback(() => {
-    fetchHealth()
-      .then((h) => setActiveModel(h.active_model))
-      .catch(() => setActiveModel(null));
-  }, []);
-
-  useEffect(() => {
-    refreshActiveModel();
-  }, [pathname, refreshActiveModel]);
-
   const handleOpenModelMenu = async (event: React.MouseEvent<HTMLElement>) => {
     setModelAnchorEl(event.currentTarget);
     setModelsLoading(true);
     try {
-      const res = await fetchModels();
-      setAllModels(res.models);
+      await refreshModels();
     } catch {
       setSnackMessage("Не удалось загрузить список моделей");
       setSnackSeverity("error");
@@ -80,16 +69,8 @@ export function Layout() {
   const handleSwitchModel = async (version: string) => {
     setSwitching(true);
     try {
-      await activateModel(version);
-      setActiveModel(version);
-      // Update the allModels state to reflect the change immediately
-      setAllModels((prev) =>
-        prev.map((m) => ({
-          ...m,
-          is_active: m.version === version ? 1 : 0,
-        }))
-      );
-      setSnackMessage(`Модель ${version} активирована. Новые скоринги будут использовать эту модель.`);
+      await switchModel(version);
+      setSnackMessage(`Модель ${version} активирована. Данные обновлены.`);
       setSnackSeverity("success");
       setSnackOpen(true);
     } catch (e: any) {
@@ -311,7 +292,7 @@ export function Layout() {
                     </Box>
                   </Box>
                   <Divider />
-                  <MenuItem onClick={() => setAnchorEl(null)} sx={{ fontSize: "0.8125rem", gap: 1 }}>
+                  <MenuItem onClick={() => { setAnchorEl(null); navigate("/dashboard"); }} sx={{ fontSize: "0.8125rem", gap: 1 }}>
                     <Person fontSize="small" /> Профиль
                   </MenuItem>
                   <MenuItem onClick={handleLogout} sx={{ fontSize: "0.8125rem", gap: 1, color: "error.main" }}>

@@ -89,5 +89,3 @@ def reset_database(
         "message": "База данных очищена. Обучите модель заново через POST /api/train.",
         "deleted": deleted,
     }
-
-

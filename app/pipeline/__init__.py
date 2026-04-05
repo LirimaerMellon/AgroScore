@@ -1,10 +1,8 @@
 """
-__init__.py для пакета pipeline
+Пакет pipeline — компоненты ML-пайплайна.
 
-Назначение:
-- Формирует единый публичный API пайплайна
-- Скрывает внутреннюю структуру модулей
-- Позволяет удобно импортировать компоненты системы
+Содержит загрузку данных, маппинг колонок, валидацию,
+очистку, конструирование признаков, модель и SHAP-объяснения.
 """
 
 from app.pipeline.loader import DataLoader
@@ -15,29 +13,12 @@ from app.pipeline.explainer import FeatureExplainer
 from app.pipeline.validators import DataValidators
 from app.pipeline.mapper import ColumnMapper
 
-# =========================
-# ПУБЛИЧНЫЙ API ПАКЕТА
-# =========================
-
 __all__ = [
-    # loader
     'DataLoader',
-
-    # cleaner
     'DataCleaner',
-
-    # features
     'FeatureEngineer',
-
-    # model
     'ScoringModel',
-
-    # explainer
     'FeatureExplainer',
-
-    # validators
     'DataValidators',
-
-    # mapper
-    'ColumnMapper'
+    'ColumnMapper',
 ]

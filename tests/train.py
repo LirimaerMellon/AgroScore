@@ -3,7 +3,6 @@ CLI-обёртка для обучения модели AgriScore.
 
 Использование:
     python tests/train.py --input data/raw/file.xlsx
-    python tests/train.py --input data/raw/file.xlsx --model-version v_custom
 """
 
 import argparse
@@ -28,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main(input_file: str, model_version: str = None):
+def main(input_file: str):
     try:
         logger.info("=" * 60)
         logger.info("AGRISCORE — ОБУЧЕНИЕ МОДЕЛИ (CLI)")
@@ -59,7 +58,6 @@ def main(input_file: str, model_version: str = None):
             df=df,
             source_name=input_path.name,
             source_type=source_type,
-            model_version=model_version,
         )
 
         # Вывод результатов
@@ -82,8 +80,7 @@ def main(input_file: str, model_version: str = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Обучение модели AgriScore")
     parser.add_argument("--input", required=True, help="Входной файл (.xlsx/.csv)")
-    parser.add_argument("--model-version", default=None, help="Версия модели (для дообучения)")
 
     args = parser.parse_args()
-    main(args.input, args.model_version)
+    main(args.input)
 

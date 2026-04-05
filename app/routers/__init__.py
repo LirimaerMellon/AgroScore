@@ -1,2 +1,1 @@
-"""Пакет routers — API эндпоинты AgriScore."""
-
+"""Пакет routers — API-эндпоинты (FastAPI Router)."""

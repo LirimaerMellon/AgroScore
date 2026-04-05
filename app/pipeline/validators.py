@@ -1,11 +1,10 @@
+"""Утилиты валидации данных для слоя очистки."""
+
 import pandas as pd
 
 
 class DataValidators:
-    """
-    Набор утилит для валидации данных.
-    Используется в preprocessing / cleaning слоях.
-    """
+    """Статические методы проверки типов и значений отдельных ячеек."""
 
     @staticmethod
     def is_strict_number(value) -> bool:
